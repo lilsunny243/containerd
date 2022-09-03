@@ -426,7 +426,7 @@ func (c *criService) registryHosts(ctx context.Context, auth *runtime.AuthConfig
 					return ParseAuth(auth, host)
 				}))
 
-			if u.Path == "" {
+			if u.Path == "" || u.Path == "/" {
 				u.Path = "/v2"
 			}
 
