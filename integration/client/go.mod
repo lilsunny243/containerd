@@ -16,12 +16,13 @@ require (
 	github.com/opencontainers/runtime-spec v1.0.3-0.20210326190908-1c3f411f0417
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.8.0
-	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f
+	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261
 )
 
 require github.com/AdaLogics/go-fuzz-headers v0.0.0-20220706123152-fef3fe1bab07
 
 require (
+	github.com/AdamKorcz/go-118-fuzz-build v0.0.0-20220723121359-e03a0069662f // indirect
 	github.com/Microsoft/go-winio v0.5.2 // indirect
 	github.com/blang/semver v3.5.1+incompatible // indirect
 	github.com/cilium/ebpf v0.9.1 // indirect
@@ -45,6 +46,7 @@ require (
 	github.com/klauspost/compress v1.15.9 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.6.2 // indirect
+	github.com/moby/sys/sequential v0.0.0-20220829095930-b22ba8a69b30 // indirect
 	github.com/moby/sys/signal v0.7.0 // indirect
 	github.com/opencontainers/runc v1.1.4 // indirect
 	github.com/opencontainers/runtime-tools v0.0.0-20190417131837-cd1349b7c47e // indirect

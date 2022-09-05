@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20220706123152-fef3fe1bab07
+	github.com/AdamKorcz/go-118-fuzz-build v0.0.0-20220723121359-e03a0069662f
 	github.com/Microsoft/go-winio v0.5.2
 	github.com/Microsoft/hcsshim v0.10.0-rc.1
 	github.com/container-orchestrated-devices/container-device-interface v0.3.1
@@ -39,6 +40,7 @@ require (
 	github.com/klauspost/compress v1.15.9
 	github.com/moby/locker v1.0.1
 	github.com/moby/sys/mountinfo v0.6.2
+	github.com/moby/sys/sequential v0.0.0-20220829095930-b22ba8a69b30
 	github.com/moby/sys/signal v0.7.0
 	github.com/moby/sys/symlink v0.2.0
 	github.com/opencontainers/go-digest v1.0.0
@@ -62,7 +64,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.7.0
 	go.opentelemetry.io/otel/trace v1.7.0
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f
+	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261
 	google.golang.org/genproto v0.0.0-20220502173005-c8bf987b8c21
 	google.golang.org/grpc v1.47.0
 	google.golang.org/protobuf v1.28.0
