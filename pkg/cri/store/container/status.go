@@ -61,10 +61,9 @@ import (
 //                      DELETED
 
 // statusVersion is current version of container status.
-const statusVersion = "v1" // nolint
+const statusVersion = "v1"
 
 // versionedStatus is the internal used versioned container status.
-// nolint
 type versionedStatus struct {
 	// Version indicates the version of the versioned container status.
 	Version string
@@ -220,12 +219,14 @@ func deepCopyOf(s Status) Status {
 	}
 	copy.Resources = &runtime.ContainerResources{}
 	if s.Resources != nil && s.Resources.Linux != nil {
-		hugepageLimits := make([]*runtime.HugepageLimit, len(s.Resources.Linux.HugepageLimits))
+		hugepageLimits := make([]*runtime.HugepageLimit, 0, len(s.Resources.Linux.HugepageLimits))
 		for _, l := range s.Resources.Linux.HugepageLimits {
-			hugepageLimits = append(hugepageLimits, &runtime.HugepageLimit{
-				PageSize: l.PageSize,
-				Limit:    l.Limit,
-			})
+			if l != nil {
+				hugepageLimits = append(hugepageLimits, &runtime.HugepageLimit{
+					PageSize: l.PageSize,
+					Limit:    l.Limit,
+				})
+			}
 		}
 		copy.Resources = &runtime.ContainerResources{
 			Linux: &runtime.LinuxContainerResources{

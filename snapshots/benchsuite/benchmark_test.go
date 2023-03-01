@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
    Copyright The containerd Authors.
@@ -291,6 +290,7 @@ func updateFile(name string) applierFn {
 
 		info, err := file.Stat()
 		if err != nil {
+			file.Close()
 			return err
 		}
 
@@ -300,10 +300,12 @@ func updateFile(name string) applierFn {
 		)
 
 		if _, err := rand.Read(buf); err != nil {
+			file.Close()
 			return err
 		}
 
 		if _, err := file.WriteAt(buf, offset); err != nil {
+			file.Close()
 			return fmt.Errorf("failed to write %q at offset %d: %w", path, offset, err)
 		}
 

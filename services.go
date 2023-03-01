@@ -24,7 +24,6 @@ import (
 	imagesapi "github.com/containerd/containerd/api/services/images/v1"
 	introspectionapi "github.com/containerd/containerd/api/services/introspection/v1"
 	namespacesapi "github.com/containerd/containerd/api/services/namespaces/v1"
-	sandboxapi "github.com/containerd/containerd/api/services/sandbox/v1"
 	"github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/content"
@@ -165,16 +164,16 @@ func WithIntrospectionService(in introspection.Service) ServicesOpt {
 }
 
 // WithSandboxStore sets the sandbox store.
-func WithSandboxStore(client sandboxapi.StoreClient) ServicesOpt {
+func WithSandboxStore(client sandbox.Store) ServicesOpt {
 	return func(s *services) {
-		s.sandboxStore = NewRemoteSandboxStore(client)
+		s.sandboxStore = client
 	}
 }
 
 // WithSandboxController sets the sandbox controller.
-func WithSandboxController(client sandboxapi.ControllerClient) ServicesOpt {
+func WithSandboxController(client sandbox.Controller) ServicesOpt {
 	return func(s *services) {
-		s.sandboxController = NewSandboxRemoteController(client)
+		s.sandboxController = client
 	}
 }
 
@@ -189,6 +188,12 @@ func WithInMemoryServices(ic *plugin.InitContext) ClientOpt {
 			},
 			plugin.LeasePlugin: func(i interface{}) ServicesOpt {
 				return WithLeasesService(i.(leases.Manager))
+			},
+			plugin.SandboxStorePlugin: func(i interface{}) ServicesOpt {
+				return WithSandboxStore(i.(sandbox.Store))
+			},
+			plugin.SandboxControllerPlugin: func(i interface{}) ServicesOpt {
+				return WithSandboxController(i.(sandbox.Controller))
 			},
 		} {
 			i, err := ic.Get(t)
@@ -226,12 +231,6 @@ func WithInMemoryServices(ic *plugin.InitContext) ClientOpt {
 			},
 			srv.IntrospectionService: func(s interface{}) ServicesOpt {
 				return WithIntrospectionClient(s.(introspectionapi.IntrospectionClient))
-			},
-			srv.SandboxStoreService: func(s interface{}) ServicesOpt {
-				return WithSandboxStore(s.(sandboxapi.StoreClient))
-			},
-			srv.SandboxControllerService: func(s interface{}) ServicesOpt {
-				return WithSandboxController(s.(sandboxapi.ControllerClient))
 			},
 		} {
 			p := plugins[s]

@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containerd/cgroups"
+	"github.com/containerd/cgroups/v3"
 	"github.com/containerd/containerd/contrib/apparmor"
 	"github.com/containerd/containerd/contrib/seccomp"
 	"github.com/containerd/containerd/oci"
@@ -36,6 +36,7 @@ import (
 	"github.com/opencontainers/selinux/go-selinux/label"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
+	"github.com/containerd/containerd/pkg/blockio"
 	"github.com/containerd/containerd/pkg/cri/annotations"
 	"github.com/containerd/containerd/pkg/cri/config"
 	customopts "github.com/containerd/containerd/pkg/cri/opts"
@@ -270,7 +271,7 @@ func (c *criService) containerSpec(
 		return nil, fmt.Errorf("failed to set blockio class: %w", err)
 	}
 	if blockIOClass != "" {
-		if linuxBlockIO, err := blockIOToLinuxOci(blockIOClass); err == nil {
+		if linuxBlockIO, err := blockio.ClassNameToLinuxOCI(blockIOClass); err == nil {
 			specOpts = append(specOpts, oci.WithBlockIO(linuxBlockIO))
 		} else {
 			return nil, err
@@ -311,16 +312,24 @@ func (c *criService) containerSpec(
 		targetPid = status.Pid
 	}
 
+	uids, gids, err := parseUsernsIDs(nsOpts.GetUsernsOptions())
+	if err != nil {
+		return nil, fmt.Errorf("user namespace configuration: %w", err)
+	}
+
+	// Check sandbox userns config is consistent with container config.
+	sandboxUsernsOpts := sandboxConfig.GetLinux().GetSecurityContext().GetNamespaceOptions().GetUsernsOptions()
+	if !sameUsernsConfig(sandboxUsernsOpts, nsOpts.GetUsernsOptions()) {
+		return nil, fmt.Errorf("user namespace config for sandbox is different from container. Sandbox userns config: %v - Container userns config: %v", sandboxUsernsOpts, nsOpts.GetUsernsOptions())
+	}
+
 	specOpts = append(specOpts,
 		customopts.WithOOMScoreAdj(config, c.config.RestrictOOMScoreAdj),
-		customopts.WithPodNamespaces(securityContext, sandboxPid, targetPid),
+		customopts.WithPodNamespaces(securityContext, sandboxPid, targetPid, uids, gids),
 		customopts.WithSupplementalGroups(supplementalGroups),
-		customopts.WithAnnotation(annotations.ContainerType, annotations.ContainerTypeContainer),
-		customopts.WithAnnotation(annotations.SandboxID, sandboxID),
-		customopts.WithAnnotation(annotations.SandboxNamespace, sandboxConfig.GetMetadata().GetNamespace()),
-		customopts.WithAnnotation(annotations.SandboxName, sandboxConfig.GetMetadata().GetName()),
-		customopts.WithAnnotation(annotations.ContainerName, containerName),
-		customopts.WithAnnotation(annotations.ImageName, imageName),
+	)
+	specOpts = append(specOpts,
+		annotations.DefaultCRIAnnotations(sandboxID, containerName, imageName, sandboxConfig, false)...,
 	)
 	// cgroupns is used for hiding /sys/fs/cgroup from containers.
 	// For compatibility, cgroupns is not used when running in cgroup v1 mode or in privileged.
@@ -364,7 +373,8 @@ func (c *criService) containerSpecOpts(config *runtime.ContainerConfig, imageCon
 		// Because it is still useful to get additional gids for uid 0.
 		userstr = strconv.FormatInt(securityContext.GetRunAsUser().GetValue(), 10)
 	}
-	specOpts = append(specOpts, customopts.WithAdditionalGIDs(userstr))
+	specOpts = append(specOpts, customopts.WithAdditionalGIDs(userstr),
+		customopts.WithSupplementalGroups(securityContext.GetSupplementalGroups()))
 
 	asp := securityContext.GetApparmor()
 	if asp == nil {
@@ -404,7 +414,7 @@ func (c *criService) containerSpecOpts(config *runtime.ContainerConfig, imageCon
 		specOpts = append(specOpts, seccompSpecOpts)
 	}
 	if c.config.EnableCDI {
-		specOpts = append(specOpts, oci.WithCDI(config.Annotations, c.config.CDISpecDirs))
+		specOpts = append(specOpts, customopts.WithCDI(config.Annotations))
 	}
 	return specOpts, nil
 }
@@ -600,6 +610,7 @@ func generateUserString(username string, uid, gid *runtime.Int64Value) (string, 
 }
 
 // snapshotterOpts returns any Linux specific snapshotter options for the rootfs snapshot
-func snapshotterOpts(snapshotterName string, config *runtime.ContainerConfig) []snapshots.Opt {
-	return []snapshots.Opt{}
+func snapshotterOpts(snapshotterName string, config *runtime.ContainerConfig) ([]snapshots.Opt, error) {
+	nsOpts := config.GetLinux().GetSecurityContext().GetNamespaceOptions()
+	return snapshotterRemapOpts(nsOpts)
 }

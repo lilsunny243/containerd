@@ -57,10 +57,11 @@ import (
 	"github.com/containerd/containerd/remotes"
 	"github.com/containerd/containerd/remotes/docker"
 	"github.com/containerd/containerd/sandbox"
+	sandboxproxy "github.com/containerd/containerd/sandbox/proxy"
 	"github.com/containerd/containerd/services/introspection"
 	"github.com/containerd/containerd/snapshots"
 	snproxy "github.com/containerd/containerd/snapshots/proxy"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sync/semaphore"
@@ -185,6 +186,12 @@ func NewWithConn(conn *grpc.ClientConn, opts ...ClientOpt) (*Client, error) {
 		defaultns: copts.defaultns,
 		conn:      conn,
 		runtime:   fmt.Sprintf("%s.%s", plugin.RuntimePlugin, runtime.GOOS),
+	}
+
+	if copts.defaultPlatform != nil {
+		c.platform = copts.defaultPlatform
+	} else {
+		c.platform = platforms.Default()
 	}
 
 	// check namespace labels for default runtime
@@ -625,6 +632,11 @@ func (c *Client) SnapshotService(snapshotterName string) snapshots.Snapshotter {
 	return snproxy.NewSnapshotter(snapshotsapi.NewSnapshotsClient(c.conn), snapshotterName)
 }
 
+// DefaultNamespace return the default namespace
+func (c *Client) DefaultNamespace() string {
+	return c.defaultns
+}
+
 // TaskService returns the underlying TasksClient
 func (c *Client) TaskService() tasks.TasksClient {
 	if c.taskService != nil {
@@ -699,7 +711,7 @@ func (c *Client) SandboxStore() sandbox.Store {
 	}
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
-	return NewRemoteSandboxStore(sandboxsapi.NewStoreClient(c.conn))
+	return sandboxproxy.NewSandboxStore(sandboxsapi.NewStoreClient(c.conn))
 }
 
 // SandboxController returns the underlying sandbox controller client
@@ -709,7 +721,7 @@ func (c *Client) SandboxController() sandbox.Controller {
 	}
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
-	return NewSandboxRemoteController(sandboxsapi.NewControllerClient(c.conn))
+	return sandboxproxy.NewSandboxController(sandboxsapi.NewControllerClient(c.conn))
 }
 
 // VersionService returns the underlying VersionClient
@@ -853,4 +865,22 @@ func toPlatforms(pt []*apitypes.Platform) []ocispec.Platform {
 		}
 	}
 	return platforms
+}
+
+// GetSnapshotterCapabilities returns the capabilities of a snapshotter.
+func (c *Client) GetSnapshotterCapabilities(ctx context.Context, snapshotterName string) ([]string, error) {
+	filters := []string{fmt.Sprintf("type==%s, id==%s", plugin.SnapshotPlugin, snapshotterName)}
+	in := c.IntrospectionService()
+
+	resp, err := in.Plugins(ctx, filters)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp.Plugins) <= 0 {
+		return nil, fmt.Errorf("inspection service could not find snapshotter %s plugin", snapshotterName)
+	}
+
+	sn := resp.Plugins[0]
+	return sn.Capabilities, nil
 }

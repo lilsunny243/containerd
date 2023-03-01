@@ -21,7 +21,6 @@ import (
 	//nolint:revive // go-digest needs the blank import. See https://github.com/opencontainers/go-digest#usage.
 	_ "crypto/sha256"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +31,7 @@ import (
 	"github.com/containerd/containerd/log/logtest"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/containerd/pkg/randutil"
 	"github.com/containerd/containerd/pkg/testutil"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/continuity/fs/fstest"
@@ -62,7 +62,6 @@ func SnapshotterSuite(t *testing.T, name string, snapshotterFn SnapshotterFunc) 
 	t.Run("RemoveIntermediateSnapshot", makeTest(name, snapshotterFn, checkRemoveIntermediateSnapshot))
 	t.Run("DeletedFilesInChildSnapshot", makeTest(name, snapshotterFn, checkDeletedFilesInChildSnapshot))
 	t.Run("MoveFileFromLowerLayer", makeTest(name, snapshotterFn, checkFileFromLowerLayer))
-	t.Run("Rename", makeTest(name, snapshotterFn, checkRename))
 
 	t.Run("ViewReadonly", makeTest(name, snapshotterFn, checkSnapshotterViewReadonly))
 
@@ -70,10 +69,16 @@ func SnapshotterSuite(t *testing.T, name string, snapshotterFn SnapshotterFunc) 
 	t.Run("CloseTwice", makeTest(name, snapshotterFn, closeTwice))
 	t.Run("RootPermission", makeTest(name, snapshotterFn, checkRootPermission))
 
+	// Different snapshotters behave slightly differently in the tests below.
+	t.Run("Rename", makeTest(name, snapshotterFn, checkRename(name)))
 	t.Run("128LayersMount", makeTest(name, snapshotterFn, check128LayersMount(name)))
 }
 
-func makeTest(name string, snapshotterFn func(ctx context.Context, root string) (snapshots.Snapshotter, func() error, error), fn func(ctx context.Context, t *testing.T, snapshotter snapshots.Snapshotter, work string)) func(t *testing.T) {
+func makeTest(
+	snapshotter string,
+	snapshotterFn func(ctx context.Context, root string) (snapshots.Snapshotter, func() error, error),
+	fn func(ctx context.Context, t *testing.T, snapshotter snapshots.Snapshotter, work string),
+) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Parallel()
 
@@ -85,7 +90,7 @@ func makeTest(name string, snapshotterFn func(ctx context.Context, root string) 
 		// 		work/ -> passed to test functions
 		// 		root/ -> passed to snapshotter
 		//
-		tmpDir, err := os.MkdirTemp("", "snapshot-suite-"+name+"-")
+		tmpDir, err := os.MkdirTemp("", "snapshot-suite-"+snapshotter+"-")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -842,7 +847,7 @@ func checkFileFromLowerLayer(ctx context.Context, t *testing.T, snapshotter snap
 }
 
 func closeTwice(ctx context.Context, t *testing.T, snapshotter snapshots.Snapshotter, work string) {
-	n := fmt.Sprintf("closeTwice-%d", rand.Int())
+	n := fmt.Sprintf("closeTwice-%d", randutil.Int())
 	prepare := fmt.Sprintf("%s-prepare", n)
 
 	// do some dummy ops to modify the snapshotter internal state

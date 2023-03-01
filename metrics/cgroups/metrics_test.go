@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
    Copyright The containerd Authors.
@@ -26,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containerd/cgroups"
+	"github.com/containerd/cgroups/v3"
 	"github.com/containerd/containerd/metrics/cgroups/common"
 	v1 "github.com/containerd/containerd/metrics/cgroups/v1"
 	v2 "github.com/containerd/containerd/metrics/cgroups/v2"

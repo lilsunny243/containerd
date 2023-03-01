@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
+	"github.com/containerd/containerd/remotes"
 	units "github.com/docker/go-units"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -40,13 +42,14 @@ var (
 	// Command is the cli command for managing content
 	Command = cli.Command{
 		Name:  "content",
-		Usage: "manage content",
+		Usage: "Manage content",
 		Subcommands: cli.Commands{
 			activeIngestCommand,
 			deleteCommand,
 			editCommand,
 			fetchCommand,
 			fetchObjectCommand,
+			fetchBlobCommand,
 			getCommand,
 			ingestCommand,
 			listCommand,
@@ -93,11 +96,11 @@ var (
 		Flags: []cli.Flag{
 			cli.Int64Flag{
 				Name:  "expected-size",
-				Usage: "validate against provided size",
+				Usage: "Validate against provided size",
 			},
 			cli.StringFlag{
 				Name:  "expected-digest",
-				Usage: "verify content against expected digest",
+				Usage: "Verify content against expected digest",
 			},
 		},
 		Action: func(context *cli.Context) error {
@@ -140,7 +143,7 @@ var (
 			},
 			cli.StringFlag{
 				Name:  "root",
-				Usage: "path to content store root",
+				Usage: "Path to content store root",
 				Value: "/tmp/content", // TODO(stevvooe): for now, just use the PWD/.content
 			},
 		},
@@ -178,7 +181,7 @@ var (
 		Flags: []cli.Flag{
 			cli.BoolFlag{
 				Name:  "quiet, q",
-				Usage: "print only the blob digest",
+				Usage: "Print only the blob digest",
 			},
 		},
 		Action: func(context *cli.Context) error {
@@ -209,6 +212,7 @@ var (
 					for k, v := range info.Labels {
 						labelStrings = append(labelStrings, strings.Join([]string{k, v}, "="))
 					}
+					sort.Strings(labelStrings)
 					labels := strings.Join(labelStrings, ",")
 					if labels == "" {
 						labels = "-"
@@ -290,7 +294,7 @@ var (
 		Flags: []cli.Flag{
 			cli.StringFlag{
 				Name:  "validate",
-				Usage: "validate the result against a format (json, mediatype, etc.)",
+				Usage: "Validate the result against a format (json, mediatype, etc.)",
 			},
 			cli.StringFlag{
 				Name:   "editor",
@@ -439,6 +443,60 @@ var (
 
 			_, err = io.Copy(os.Stdout, rc)
 			return err
+		},
+	}
+
+	fetchBlobCommand = cli.Command{
+		Name:        "fetch-blob",
+		Usage:       "retrieve blobs from a remote",
+		ArgsUsage:   "[flags] <remote> [<digest>, ...]",
+		Description: `Fetch blobs by digests from a remote.`,
+		Flags:       commands.RegistryFlags,
+		Action: func(context *cli.Context) error {
+			var (
+				ref     = context.Args().First()
+				digests = context.Args().Tail()
+			)
+			if len(digests) == 0 {
+				return errors.New("must specify digests")
+			}
+			ctx, cancel := commands.AppContext(context)
+			defer cancel()
+
+			resolver, err := commands.GetResolver(ctx, context)
+			if err != nil {
+				return err
+			}
+
+			ctx = log.WithLogger(ctx, log.G(ctx).WithField("ref", ref))
+
+			log.G(ctx).Debugf("resolving")
+			fetcher, err := resolver.Fetcher(ctx, ref)
+			if err != nil {
+				return err
+			}
+
+			fetcherByDigest, ok := fetcher.(remotes.FetcherByDigest)
+			if !ok {
+				return fmt.Errorf("fetcher %T does not implement remotes.FetcherByDigest", fetcher)
+			}
+
+			for _, f := range digests {
+				dgst, err := digest.Parse(f)
+				if err != nil {
+					return err
+				}
+				rc, _, err := fetcherByDigest.FetchByDigest(ctx, dgst)
+				if err != nil {
+					return err
+				}
+				_, err = io.Copy(os.Stdout, rc)
+				rc.Close()
+				if err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 

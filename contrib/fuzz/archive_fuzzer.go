@@ -1,5 +1,4 @@
 //go:build gofuzz
-// +build gofuzz
 
 /*
    Copyright The containerd Authors.
@@ -17,9 +16,12 @@
 package fuzz
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"io"
 	"os"
+	"path"
 
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
 	"github.com/sirupsen/logrus"
@@ -28,6 +30,7 @@ import (
 	"github.com/containerd/containerd/content/local"
 	imageArchive "github.com/containerd/containerd/images/archive"
 	"github.com/containerd/containerd/log"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // FuzzApply implements a fuzzer that applies
@@ -71,8 +74,64 @@ func FuzzImportIndex(data []byte) int {
 	if err != nil {
 		return 0
 	}
+	var r *bytes.Reader
 	ctx := context.Background()
-	r := bytes.NewReader(tarBytes)
+	r = bytes.NewReader(tarBytes)
+	shouldRequireLayoutOrManifest, err := f.GetBool()
+	if err != nil {
+		return 0
+	}
+	if shouldRequireLayoutOrManifest {
+		hasLayoutOrManifest := false
+		tr := tar.NewReader(r)
+		for {
+			hdr, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return 0
+			}
+			hdrName := path.Clean(hdr.Name)
+			switch hdrName {
+			case ocispec.ImageLayoutFile, "manifest.json":
+				hasLayoutOrManifest = true
+			}
+		}
+		if !hasLayoutOrManifest {
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			defer tw.Close()
+			tr := tar.NewReader(r)
+			for {
+				hdr, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return 0
+				}
+				fileContents, err := io.ReadAll(tr)
+				if err != nil {
+					return 0
+				}
+				tw.WriteHeader(hdr)
+				tw.Write(fileContents)
+			}
+			manifestFileContents, err := f.GetBytes()
+			if err != nil {
+				return 0
+			}
+			tw.WriteHeader(&tar.Header{
+				Name:     "manifest.json",
+				Mode:     0644,
+				Size:     int64(len(manifestFileContents)),
+				Typeflag: tar.TypeReg,
+			})
+			tw.Write(manifestFileContents)
+			r = bytes.NewReader(buf.Bytes())
+		}
+	}
 	tmpdir, err := os.MkdirTemp("", "fuzzing-")
 	if err != nil {
 		return 0

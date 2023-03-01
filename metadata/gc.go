@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	eventstypes "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/gc"
 	"github.com/containerd/containerd/log"
 	bolt "go.etcd.io/bbolt"
@@ -46,6 +47,8 @@ const (
 	ResourceIngest
 	// resourceEnd is the end of specified resource types
 	resourceEnd
+	// ResourceStream specifies a stream
+	ResourceStream
 )
 
 const (
@@ -138,6 +141,7 @@ func startGCContext(ctx context.Context, collectors map[gc.ResourceType]Collecto
 	if len(collectors) > 0 {
 		contexts = map[gc.ResourceType]CollectionContext{}
 		for rt, collector := range collectors {
+			rt := rt
 			c, err := collector.StartCollection(ctx)
 			if err != nil {
 				// Only skipping this resource this round
@@ -426,6 +430,20 @@ func (c *gcContext) scanRoots(ctx context.Context, tx *bolt.Tx, nc chan<- gc.Nod
 			}
 		}
 
+		bbkt := nbkt.Bucket(bucketKeyObjectSandboxes)
+		if bbkt != nil {
+			if err := bbkt.ForEach(func(k, v []byte) error {
+				if v != nil {
+					return nil
+				}
+
+				sbbkt := bbkt.Bucket(k)
+				return c.sendLabelRefs(ns, sbbkt, fn)
+			}); err != nil {
+				return err
+			}
+		}
+
 		c.active(ns, fn)
 	}
 	return cerr
@@ -443,13 +461,10 @@ func (c *gcContext) references(ctx context.Context, tx *bolt.Tx, node gc.Node, f
 
 		return c.sendLabelRefs(node.Namespace, bkt, fn)
 	case ResourceSnapshot, resourceSnapshotFlat:
-		parts := strings.SplitN(node.Key, "/", 2)
-		if len(parts) != 2 {
+		ss, name, ok := strings.Cut(node.Key, "/")
+		if !ok {
 			return fmt.Errorf("invalid snapshot gc key %s", node.Key)
 		}
-		ss := parts[0]
-		name := parts[1]
-
 		bkt := getBucket(tx, bucketKeyVersion, []byte(node.Namespace), bucketKeyObjectSnapshots, []byte(ss), []byte(name))
 		if bkt == nil {
 			// Node may be created from dead edge
@@ -563,17 +578,17 @@ func (c *gcContext) scanAll(ctx context.Context, tx *bolt.Tx, fn func(ctx contex
 	}
 
 	c.all(func(n gc.Node) {
-		fn(ctx, n)
+		_ = fn(ctx, n)
 	})
 
 	return nil
 }
 
 // remove all buckets for the given node.
-func (c *gcContext) remove(ctx context.Context, tx *bolt.Tx, node gc.Node) error {
+func (c *gcContext) remove(ctx context.Context, tx *bolt.Tx, node gc.Node) (interface{}, error) {
 	v1bkt := tx.Bucket(bucketKeyVersion)
 	if v1bkt == nil {
-		return nil
+		return nil, nil
 	}
 
 	nsbkt := v1bkt.Bucket([]byte(node.Namespace))
@@ -582,7 +597,7 @@ func (c *gcContext) remove(ctx context.Context, tx *bolt.Tx, node gc.Node) error
 		if cc, ok := c.contexts[node.Type]; ok {
 			cc.Remove(node)
 		}
-		return nil
+		return nil, nil
 	}
 
 	switch node.Type {
@@ -593,25 +608,28 @@ func (c *gcContext) remove(ctx context.Context, tx *bolt.Tx, node gc.Node) error
 		}
 		if cbkt != nil {
 			log.G(ctx).WithField("key", node.Key).Debug("remove content")
-			return cbkt.DeleteBucket([]byte(node.Key))
+			return nil, cbkt.DeleteBucket([]byte(node.Key))
 		}
 	case ResourceSnapshot:
 		sbkt := nsbkt.Bucket(bucketKeyObjectSnapshots)
 		if sbkt != nil {
-			parts := strings.SplitN(node.Key, "/", 2)
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid snapshot gc key %s", node.Key)
+			ss, key, ok := strings.Cut(node.Key, "/")
+			if !ok {
+				return nil, fmt.Errorf("invalid snapshot gc key %s", node.Key)
 			}
-			ssbkt := sbkt.Bucket([]byte(parts[0]))
+			ssbkt := sbkt.Bucket([]byte(ss))
 			if ssbkt != nil {
-				log.G(ctx).WithField("key", parts[1]).WithField("snapshotter", parts[0]).Debug("remove snapshot")
-				return ssbkt.DeleteBucket([]byte(parts[1]))
+				log.G(ctx).WithField("key", key).WithField("snapshotter", ss).Debug("remove snapshot")
+				return &eventstypes.SnapshotRemove{
+					Key:         key,
+					Snapshotter: ss,
+				}, ssbkt.DeleteBucket([]byte(key))
 			}
 		}
 	case ResourceLease:
 		lbkt := nsbkt.Bucket(bucketKeyObjectLeases)
 		if lbkt != nil {
-			return lbkt.DeleteBucket([]byte(node.Key))
+			return nil, lbkt.DeleteBucket([]byte(node.Key))
 		}
 	case ResourceIngest:
 		ibkt := nsbkt.Bucket(bucketKeyObjectContent)
@@ -620,7 +638,7 @@ func (c *gcContext) remove(ctx context.Context, tx *bolt.Tx, node gc.Node) error
 		}
 		if ibkt != nil {
 			log.G(ctx).WithField("ref", node.Key).Debug("remove ingest")
-			return ibkt.DeleteBucket([]byte(node.Key))
+			return nil, ibkt.DeleteBucket([]byte(node.Key))
 		}
 	default:
 		cc, ok := c.contexts[node.Type]
@@ -631,7 +649,7 @@ func (c *gcContext) remove(ctx context.Context, tx *bolt.Tx, node gc.Node) error
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 // sendLabelRefs sends all snapshot and content references referred to by the labels in the bkt

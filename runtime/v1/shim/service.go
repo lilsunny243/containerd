@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 /*
    Copyright The containerd Authors.
@@ -44,7 +43,7 @@ import (
 	shimapi "github.com/containerd/containerd/runtime/v1/shim/v1"
 	"github.com/containerd/containerd/sys/reaper"
 	runc "github.com/containerd/go-runc"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -83,7 +82,7 @@ func NewService(config Config, publisher events.Publisher) (*Service, error) {
 		return nil, fmt.Errorf("shim namespace cannot be empty")
 	}
 	ctx := namespaces.WithNamespace(context.Background(), config.Namespace)
-	ctx = log.WithLogger(ctx, logrus.WithFields(logrus.Fields{
+	ctx = log.WithLogger(ctx, logrus.WithFields(log.Fields{
 		"namespace": config.Namespace,
 		"path":      config.Path,
 		"pid":       os.Getpid(),
@@ -121,9 +120,9 @@ type Service struct {
 
 // Create a new initial process and container with the underlying OCI runtime
 func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *shimapi.CreateTaskResponse, err error) {
-	var mounts []process.Mount
+	var pmounts []process.Mount
 	for _, m := range r.Rootfs {
-		mounts = append(mounts, process.Mount{
+		pmounts = append(pmounts, process.Mount{
 			Type:    m.Type,
 			Source:  m.Source,
 			Target:  m.Target,
@@ -132,7 +131,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 	}
 
 	rootfs := ""
-	if len(mounts) > 0 {
+	if len(pmounts) > 0 {
 		rootfs = filepath.Join(r.Bundle, "rootfs")
 		if err := os.Mkdir(rootfs, 0711); err != nil && !os.IsExist(err) {
 			return nil, err
@@ -143,7 +142,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		ID:               r.ID,
 		Bundle:           r.Bundle,
 		Runtime:          r.Runtime,
-		Rootfs:           mounts,
+		Rootfs:           pmounts,
 		Terminal:         r.Terminal,
 		Stdin:            r.Stdin,
 		Stdout:           r.Stdout,
@@ -152,22 +151,24 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		ParentCheckpoint: r.ParentCheckpoint,
 		Options:          r.Options,
 	}
+	var mounts []mount.Mount
+	for _, pm := range pmounts {
+		mounts = append(mounts, mount.Mount{
+			Type:    pm.Type,
+			Source:  pm.Source,
+			Target:  pm.Target,
+			Options: pm.Options,
+		})
+	}
 	defer func() {
 		if err != nil {
-			if err2 := mount.UnmountAll(rootfs, 0); err2 != nil {
+			if err2 := mount.UnmountMounts(mounts, rootfs, 0); err2 != nil {
 				log.G(ctx).WithError(err2).Warn("Failed to cleanup rootfs mount")
 			}
 		}
 	}()
-	for _, rm := range mounts {
-		m := &mount.Mount{
-			Type:    rm.Type,
-			Source:  rm.Source,
-			Options: rm.Options,
-		}
-		if err := m.Mount(rootfs); err != nil {
-			return nil, fmt.Errorf("failed to mount rootfs component %v: %w", m, err)
-		}
+	if err := mount.All(mounts, rootfs); err != nil {
+		return nil, fmt.Errorf("failed to mount rootfs component: %w", err)
 	}
 
 	s.mu.Lock()

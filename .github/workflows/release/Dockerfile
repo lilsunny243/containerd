@@ -12,22 +12,22 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-# UBUNTU_VERSION can be set to 18.04 (bionic), 20.04 (focal), or 22.04 (jammy)
-ARG UBUNTU_VERSION=18.04
+# UBUNTU_VERSION can be set to 18.04 (bionic, DEPRECATED), 20.04 (focal), or 22.04 (jammy)
+ARG UBUNTU_VERSION=20.04
 ARG BASE_IMAGE=ubuntu:${UBUNTU_VERSION}
 ARG GO_VERSION
 ARG GO_IMAGE=golang:${GO_VERSION}
 FROM --platform=$BUILDPLATFORM $GO_IMAGE AS go
-FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.1.0@sha256:76a8510b1798f66fcc87e7ec2f4684aa1b16756df2a397ec307b9efb6023f6c5 AS xx
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.2.1@sha256:8879a398dedf0aadaacfbd332b29ff2f84bc39ae6d4e9c0a1109db27ac5ba012 AS xx
 
 FROM --platform=$BUILDPLATFORM ${BASE_IMAGE} AS base
 COPY --from=xx / /
 SHELL ["/bin/bash", "-xec"]
+ENV DEBIAN_FRONTEND=noninteractive
 RUN	apt-get update && \
 	apt-get install -y dpkg-dev git make pkg-config
 ARG TARGETPLATFORM
 RUN xx-apt-get install -y libseccomp-dev btrfs-progs gcc
-RUN if grep -qE 'UBUNTU_CODENAME=(focal|jammy)' /etc/os-release; then xx-apt-get install -y libbtrfs-dev; fi
 ENV PATH=/usr/local/go/bin:$PATH
 ENV GOPATH=/go
 ENV CGO_ENABLED=1
@@ -49,7 +49,7 @@ RUN \
 	--mount=type=cache,target=/root/.cache/go-build \
 	--mount=type=cache,target=/go/pkg \
 	export CC=$(xx-info)-gcc && xx-go --wrap && \
-	make release cri-release cri-cni-release && \
+	make release static-release cri-release cri-cni-release && \
 	for f in $(find bin -executable -type f); do xx-verify $f; done
 
 # check git working tree after build

@@ -24,10 +24,9 @@ import (
 
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/oci"
-	"github.com/containerd/containerd/protobuf"
 	"github.com/containerd/containerd/protobuf/types"
 	api "github.com/containerd/containerd/sandbox"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 )
 
 // Sandbox is a high level client to containerd's sandboxes.
@@ -46,8 +45,8 @@ type Sandbox interface {
 	Stop(ctx context.Context) error
 	// Wait blocks until sandbox process exits.
 	Wait(ctx context.Context) (<-chan ExitStatus, error)
-	// Delete removes sandbox from the metadata store.
-	Delete(ctx context.Context) error
+	// Shutdown removes sandbox from the metadata store and shutdowns shim instance.
+	Shutdown(ctx context.Context) error
 }
 
 type sandboxClient struct {
@@ -96,7 +95,7 @@ func (s *sandboxClient) Wait(ctx context.Context) (<-chan ExitStatus, error) {
 	go func() {
 		defer close(c)
 
-		resp, err := s.client.SandboxController().Wait(ctx, s.ID())
+		exitStatus, err := s.client.SandboxController().Wait(ctx, s.ID())
 		if err != nil {
 			c <- ExitStatus{
 				code: UnknownExitStatus,
@@ -106,8 +105,8 @@ func (s *sandboxClient) Wait(ctx context.Context) (<-chan ExitStatus, error) {
 		}
 
 		c <- ExitStatus{
-			code:     resp.ExitStatus,
-			exitedAt: protobuf.FromTimestamp(resp.ExitedAt),
+			code:     exitStatus.ExitStatus,
+			exitedAt: exitStatus.ExitedAt,
 		}
 	}()
 
@@ -115,17 +114,19 @@ func (s *sandboxClient) Wait(ctx context.Context) (<-chan ExitStatus, error) {
 }
 
 func (s *sandboxClient) Stop(ctx context.Context) error {
-	if _, err := s.client.SandboxController().Stop(ctx, s.ID()); err != nil {
-		return err
-	}
-	return nil
+	return s.client.SandboxController().Stop(ctx, s.ID())
 }
 
-func (s *sandboxClient) Delete(ctx context.Context) error {
-	if _, err := s.client.SandboxController().Delete(ctx, s.ID()); err != nil {
-		return err
+func (s *sandboxClient) Shutdown(ctx context.Context) error {
+	if err := s.client.SandboxController().Shutdown(ctx, s.ID()); err != nil {
+		return fmt.Errorf("failed to shutdown sandbox: %w", err)
 	}
-	return s.client.SandboxStore().Delete(ctx, s.ID())
+
+	if err := s.client.SandboxStore().Delete(ctx, s.ID()); err != nil {
+		return fmt.Errorf("failed to delete sandbox from store: %w", err)
+	}
+
+	return nil
 }
 
 // NewSandbox creates new sandbox client
@@ -165,7 +166,7 @@ func (c *Client) LoadSandbox(ctx context.Context, id string) (Sandbox, error) {
 		return nil, err
 	}
 
-	status, err := c.SandboxController().Status(ctx, id)
+	status, err := c.SandboxController().Status(ctx, id, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sandbox %s, status request failed: %w", id, err)
 	}

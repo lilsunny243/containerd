@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -38,15 +39,24 @@ import (
 
 var densityCommand = cli.Command{
 	Name:  "density",
-	Usage: "stress tests density of containers running on a system",
+	Usage: "Stress tests density of containers running on a system",
 	Flags: []cli.Flag{
 		cli.IntFlag{
 			Name:  "count",
-			Usage: "number of containers to run",
+			Usage: "Number of containers to run",
 			Value: 10,
 		},
 	},
 	Action: func(cliContext *cli.Context) error {
+		var (
+			pids  []uint32
+			count = cliContext.Int("count")
+		)
+
+		if count < 1 {
+			return errors.New("count cannot be less than one")
+		}
+
 		config := config{
 			Address:     cliContext.GlobalString("address"),
 			Duration:    cliContext.GlobalDuration("duration"),
@@ -76,10 +86,6 @@ var densityCommand = cli.Command{
 		s := make(chan os.Signal, 1)
 		signal.Notify(s, syscall.SIGTERM, syscall.SIGINT)
 
-		var (
-			pids  []uint32
-			count = cliContext.Int("count")
-		)
 	loop:
 		for i := 0; i < count+1; i++ {
 			select {
@@ -206,13 +212,13 @@ func parseStat(data string) (stat Stat, err error) {
 		return stat, fmt.Errorf("invalid stat data: %q", data)
 	}
 
-	parts := strings.SplitN(data[:i], "(", 2)
-	if len(parts) != 2 {
+	val, name, ok := strings.Cut(data[:i], "(")
+	if !ok {
 		return stat, fmt.Errorf("invalid stat data: %q", data)
 	}
 
-	stat.Name = parts[1]
-	_, err = fmt.Sscanf(parts[0], "%d", &stat.PID)
+	stat.Name = name
+	_, err = fmt.Sscanf(val, "%d", &stat.PID)
 	if err != nil {
 		return stat, err
 	}
@@ -220,7 +226,7 @@ func parseStat(data string) (stat Stat, err error) {
 	// parts indexes should be offset by 3 from the field number given
 	// proc(5), because parts is zero-indexed and we've removed fields
 	// one (PID) and two (Name) in the paren-split.
-	parts = strings.Split(data[i+2:], " ")
+	parts := strings.Split(data[i+2:], " ")
 	fmt.Sscanf(parts[22-3], "%d", &stat.StartTime)
 	fmt.Sscanf(parts[4-3], "%d", &stat.PPID)
 	return stat, nil

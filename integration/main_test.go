@@ -17,20 +17,24 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/containers"
 	cri "github.com/containerd/containerd/integration/cri-api/pkg/apis"
 	_ "github.com/containerd/containerd/integration/images" // Keep this around to parse `imageListFile` command line var
 	"github.com/containerd/containerd/integration/remote"
@@ -39,6 +43,7 @@ import (
 	"github.com/containerd/containerd/pkg/cri/constants"
 	"github.com/containerd/containerd/pkg/cri/server"
 	"github.com/containerd/containerd/pkg/cri/util"
+	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,6 +127,35 @@ func WithHostNetwork(p *runtime.PodSandboxConfig) {
 	p.Linux.SecurityContext.NamespaceOptions.Network = runtime.NamespaceMode_NODE
 }
 
+// Set pod userns.
+func WithPodUserNs(containerID, hostID, length uint32) PodSandboxOpts {
+	return func(p *runtime.PodSandboxConfig) {
+		if p.Linux == nil {
+			p.Linux = &runtime.LinuxPodSandboxConfig{}
+		}
+		if p.Linux.SecurityContext == nil {
+			p.Linux.SecurityContext = &runtime.LinuxSandboxSecurityContext{}
+		}
+		if p.Linux.SecurityContext.NamespaceOptions == nil {
+			p.Linux.SecurityContext.NamespaceOptions = &runtime.NamespaceOption{}
+		}
+
+		idMap := runtime.IDMapping{
+			HostId:      hostID,
+			ContainerId: containerID,
+			Length:      length,
+		}
+		if p.Linux.SecurityContext.NamespaceOptions.UsernsOptions == nil {
+			p.Linux.SecurityContext.NamespaceOptions.UsernsOptions = &runtime.UserNamespace{
+				Mode: runtime.NamespaceMode_POD,
+			}
+		}
+
+		p.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Uids = append(p.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Uids, &idMap)
+		p.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Gids = append(p.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Gids, &idMap)
+	}
+}
+
 // Set host pid.
 func WithHostPid(p *runtime.PodSandboxConfig) {
 	if p.Linux == nil {
@@ -164,6 +198,15 @@ func WithPodHostname(hostname string) PodSandboxOpts {
 	}
 }
 
+// Add pod labels.
+func WithPodLabels(kvs map[string]string) PodSandboxOpts {
+	return func(p *runtime.PodSandboxConfig) {
+		for k, v := range kvs {
+			p.Labels[k] = v
+		}
+	}
+}
+
 // PodSandboxConfig generates a pod sandbox config for test.
 func PodSandboxConfig(name, ns string, opts ...PodSandboxOpts) *runtime.PodSandboxConfig {
 	config := &runtime.PodSandboxConfig{
@@ -176,6 +219,7 @@ func PodSandboxConfig(name, ns string, opts ...PodSandboxOpts) *runtime.PodSandb
 		},
 		Linux:       &runtime.LinuxPodSandboxConfig{},
 		Annotations: make(map[string]string),
+		Labels:      make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(config)
@@ -196,7 +240,7 @@ func PodSandboxConfigWithCleanup(t *testing.T, name, ns string, opts ...PodSandb
 }
 
 // Set Windows HostProcess on the pod.
-func WithWindowsHostProcessPod(p *runtime.PodSandboxConfig) { //nolint:unused
+func WithWindowsHostProcessPod(p *runtime.PodSandboxConfig) {
 	if p.Windows == nil {
 		p.Windows = &runtime.WindowsPodSandboxConfig{}
 	}
@@ -223,7 +267,7 @@ func WithTestAnnotations() ContainerOpts {
 }
 
 // Add container resource limits.
-func WithResources(r *runtime.LinuxContainerResources) ContainerOpts { //nolint:unused
+func WithResources(r *runtime.LinuxContainerResources) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		if c.Linux == nil {
 			c.Linux = &runtime.LinuxContainerConfig{}
@@ -233,7 +277,7 @@ func WithResources(r *runtime.LinuxContainerResources) ContainerOpts { //nolint:
 }
 
 // Adds Windows container resource limits.
-func WithWindowsResources(r *runtime.WindowsContainerResources) ContainerOpts { //nolint:unused
+func WithWindowsResources(r *runtime.WindowsContainerResources) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		if c.Windows == nil {
 			c.Windows = &runtime.WindowsContainerConfig{}
@@ -246,12 +290,16 @@ func WithVolumeMount(hostPath, containerPath string) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		hostPath, _ = filepath.Abs(hostPath)
 		containerPath, _ = filepath.Abs(containerPath)
-		mount := &runtime.Mount{HostPath: hostPath, ContainerPath: containerPath}
+		mount := &runtime.Mount{
+			HostPath:       hostPath,
+			ContainerPath:  containerPath,
+			SelinuxRelabel: selinux.GetEnabled(),
+		}
 		c.Mounts = append(c.Mounts, mount)
 	}
 }
 
-func WithWindowsUsername(username string) ContainerOpts { //nolint:unused
+func WithWindowsUsername(username string) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		if c.Windows == nil {
 			c.Windows = &runtime.WindowsContainerConfig{}
@@ -263,7 +311,7 @@ func WithWindowsUsername(username string) ContainerOpts { //nolint:unused
 	}
 }
 
-func WithWindowsHostProcessContainer() ContainerOpts { //nolint:unused
+func WithWindowsHostProcessContainer() ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		if c.Windows == nil {
 			c.Windows = &runtime.WindowsContainerConfig{}
@@ -300,6 +348,35 @@ func WithPidNamespace(mode runtime.NamespaceMode) ContainerOpts {
 
 }
 
+// Add user namespace pod mode.
+func WithUserNamespace(containerID, hostID, length uint32) ContainerOpts {
+	return func(c *runtime.ContainerConfig) {
+		if c.Linux == nil {
+			c.Linux = &runtime.LinuxContainerConfig{}
+		}
+		if c.Linux.SecurityContext == nil {
+			c.Linux.SecurityContext = &runtime.LinuxContainerSecurityContext{}
+		}
+		if c.Linux.SecurityContext.NamespaceOptions == nil {
+			c.Linux.SecurityContext.NamespaceOptions = &runtime.NamespaceOption{}
+		}
+		idMap := runtime.IDMapping{
+			HostId:      hostID,
+			ContainerId: containerID,
+			Length:      length,
+		}
+
+		if c.Linux.SecurityContext.NamespaceOptions.UsernsOptions == nil {
+			c.Linux.SecurityContext.NamespaceOptions.UsernsOptions = &runtime.UserNamespace{
+				Mode: runtime.NamespaceMode_POD,
+			}
+		}
+
+		c.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Uids = append(c.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Uids, &idMap)
+		c.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Gids = append(c.Linux.SecurityContext.NamespaceOptions.UsernsOptions.Gids, &idMap)
+	}
+}
+
 // Add container log path.
 func WithLogPath(path string) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
@@ -307,8 +384,47 @@ func WithLogPath(path string) ContainerOpts {
 	}
 }
 
+// WithRunAsUser sets the uid.
+func WithRunAsUser(uid int64) ContainerOpts {
+	return func(c *runtime.ContainerConfig) {
+		if c.Linux == nil {
+			c.Linux = &runtime.LinuxContainerConfig{}
+		}
+		if c.Linux.SecurityContext == nil {
+			c.Linux.SecurityContext = &runtime.LinuxContainerSecurityContext{}
+		}
+		c.Linux.SecurityContext.RunAsUser = &runtime.Int64Value{Value: uid}
+	}
+}
+
+// WithRunAsUsername sets the username.
+func WithRunAsUsername(username string) ContainerOpts {
+	return func(c *runtime.ContainerConfig) {
+		if c.Linux == nil {
+			c.Linux = &runtime.LinuxContainerConfig{}
+		}
+		if c.Linux.SecurityContext == nil {
+			c.Linux.SecurityContext = &runtime.LinuxContainerSecurityContext{}
+		}
+		c.Linux.SecurityContext.RunAsUsername = username
+	}
+}
+
+// WithRunAsGroup sets the gid.
+func WithRunAsGroup(gid int64) ContainerOpts {
+	return func(c *runtime.ContainerConfig) {
+		if c.Linux == nil {
+			c.Linux = &runtime.LinuxContainerConfig{}
+		}
+		if c.Linux.SecurityContext == nil {
+			c.Linux.SecurityContext = &runtime.LinuxContainerSecurityContext{}
+		}
+		c.Linux.SecurityContext.RunAsGroup = &runtime.Int64Value{Value: gid}
+	}
+}
+
 // WithSupplementalGroups adds supplemental groups.
-func WithSupplementalGroups(gids []int64) ContainerOpts { //nolint:unused
+func WithSupplementalGroups(gids []int64) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		if c.Linux == nil {
 			c.Linux = &runtime.LinuxContainerConfig{}
@@ -321,7 +437,7 @@ func WithSupplementalGroups(gids []int64) ContainerOpts { //nolint:unused
 }
 
 // WithDevice adds a device mount.
-func WithDevice(containerPath, hostPath, permissions string) ContainerOpts { //nolint:unused
+func WithDevice(containerPath, hostPath, permissions string) ContainerOpts {
 	return func(c *runtime.ContainerConfig) {
 		c.Devices = append(c.Devices, &runtime.Device{
 			ContainerPath: containerPath, HostPath: hostPath, Permissions: permissions,
@@ -393,12 +509,12 @@ func Randomize(str string) string {
 }
 
 // KillProcess kills the process by name. pkill is used.
-func KillProcess(name string) error {
+func KillProcess(name string, signal syscall.Signal) error {
 	var command []string
 	if goruntime.GOOS == "windows" {
 		command = []string{"taskkill", "/IM", name, "/F"}
 	} else {
-		command = []string{"pkill", "-x", fmt.Sprintf("^%s$", name)}
+		command = []string{"pkill", "-" + strconv.Itoa(int(signal)), "-x", fmt.Sprintf("^%s$", name)}
 	}
 
 	output, err := exec.Command(command[0], command[1:]...).CombinedOutput()
@@ -432,6 +548,80 @@ func PidOf(name string) (int, error) {
 		return 0, nil
 	}
 	return strconv.Atoi(output)
+}
+
+// PidsOf returns pid(s) of a process by name
+func PidsOf(name string) ([]int, error) {
+	if len(name) == 0 {
+		return []int{}, fmt.Errorf("name is required")
+	}
+
+	procDirFD, err := os.Open("/proc")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open /proc: %w", err)
+	}
+	defer procDirFD.Close()
+
+	res := []int{}
+	for {
+		fileInfos, err := procDirFD.Readdir(100)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("failed to readdir: %w", err)
+		}
+
+		for _, fileInfo := range fileInfos {
+			if !fileInfo.IsDir() {
+				continue
+			}
+
+			pid, err := strconv.Atoi(fileInfo.Name())
+			if err != nil {
+				continue
+			}
+
+			exePath, err := os.Readlink(filepath.Join("/proc", fileInfo.Name(), "exe"))
+			if err != nil {
+				continue
+			}
+
+			if strings.HasSuffix(exePath, name) {
+				res = append(res, pid)
+			}
+		}
+	}
+	return res, nil
+}
+
+// PidEnvs returns the environ of pid in key-value pairs.
+func PidEnvs(pid int) (map[string]string, error) {
+	envPath := filepath.Join("/proc", strconv.Itoa(pid), "environ")
+
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", envPath, err)
+	}
+
+	values := bytes.Split(b, []byte{0})
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	res := make(map[string]string)
+	for _, value := range values {
+		value = bytes.TrimSpace(value)
+		if len(value) == 0 {
+			continue
+		}
+
+		k, v, ok := strings.Cut(string(value), "=")
+		if ok {
+			res[k] = v
+		}
+	}
+	return res, nil
 }
 
 // RawRuntimeClient returns a raw grpc runtime service client.
@@ -470,7 +660,7 @@ func CRIConfig() (*criconfig.Config, error) {
 }
 
 // SandboxInfo gets sandbox info.
-func SandboxInfo(id string) (*runtime.PodSandboxStatus, *server.SandboxInfo, error) { //nolint:unused
+func SandboxInfo(id string) (*runtime.PodSandboxStatus, *server.SandboxInfo, error) {
 	client, err := RawRuntimeClient()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get raw runtime client: %w", err)
@@ -490,8 +680,8 @@ func SandboxInfo(id string) (*runtime.PodSandboxStatus, *server.SandboxInfo, err
 	return status, &info, nil
 }
 
-func RestartContainerd(t *testing.T) {
-	require.NoError(t, KillProcess(*containerdBin))
+func RestartContainerd(t *testing.T, signal syscall.Signal) {
+	require.NoError(t, KillProcess(*containerdBin, signal))
 
 	// Use assert so that the 3rd wait always runs, this makes sure
 	// containerd is running before this function returns.
@@ -523,4 +713,8 @@ func EnsureImageExists(t *testing.T, imageName string) string {
 	require.NoError(t, err)
 
 	return imgID
+}
+
+func GetContainer(id string) (containers.Container, error) {
+	return containerdClient.ContainerService().Get(context.Background(), id)
 }

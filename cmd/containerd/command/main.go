@@ -68,7 +68,7 @@ func App() *cli.App {
 	app.Usage = usage
 	app.Description = `
 containerd is a high performance container runtime whose daemon can be started
-by using this command. If none of the *config*, *publish*, or *help* commands
+by using this command. If none of the *config*, *publish*, *oci-hook*, or *help* commands
 are specified, the default action of the **containerd** command is to start the
 containerd daemon in the foreground.
 
@@ -80,16 +80,16 @@ can be used and modified as necessary as a custom configuration.`
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "config,c",
-			Usage: "path to the configuration file",
+			Usage: "Path to the configuration file",
 			Value: filepath.Join(defaults.DefaultConfigDir, "config.toml"),
 		},
 		cli.StringFlag{
 			Name:  "log-level,l",
-			Usage: "set the logging level [trace, debug, info, warn, error, fatal, panic]",
+			Usage: "Set the logging level [trace, debug, info, warn, error, fatal, panic]",
 		},
 		cli.StringFlag{
 			Name:  "address,a",
-			Usage: "address for containerd's GRPC server",
+			Usage: "Address for containerd's GRPC server",
 		},
 		cli.StringFlag{
 			Name:  "root",
@@ -132,6 +132,16 @@ can be used and modified as necessary as a custom configuration.`
 			return err
 		}
 
+		if config.GRPC.Address == "" {
+			return fmt.Errorf("grpc address cannot be empty: %w", errdefs.ErrInvalidArgument)
+		}
+		if config.TTRPC.Address == "" {
+			// If TTRPC was not explicitly configured, use defaults based on GRPC.
+			config.TTRPC.Address = config.GRPC.Address + ".ttrpc"
+			config.TTRPC.UID = config.GRPC.UID
+			config.TTRPC.GID = config.GRPC.GID
+		}
+
 		// Make sure top-level directories are created early.
 		if err := server.CreateTopLevelDirectories(config); err != nil {
 			return err
@@ -164,16 +174,7 @@ can be used and modified as necessary as a custom configuration.`
 			log.G(ctx).WithError(w).Warn("cleanup temp mount")
 		}
 
-		if config.GRPC.Address == "" {
-			return fmt.Errorf("grpc address cannot be empty: %w", errdefs.ErrInvalidArgument)
-		}
-		if config.TTRPC.Address == "" {
-			// If TTRPC was not explicitly configured, use defaults based on GRPC.
-			config.TTRPC.Address = fmt.Sprintf("%s.ttrpc", config.GRPC.Address)
-			config.TTRPC.UID = config.GRPC.UID
-			config.TTRPC.GID = config.GRPC.GID
-		}
-		log.G(ctx).WithFields(logrus.Fields{
+		log.G(ctx).WithFields(log.Fields{
 			"version":  version.Version,
 			"revision": version.Revision,
 		}).Info("starting containerd")

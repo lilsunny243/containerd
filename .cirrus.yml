@@ -22,8 +22,9 @@ task:
     # By default, Cirrus CI doesn't have HOME defined
     HOME: /root
     matrix:
-      BOX: fedora/36-cloud-base
-      BOX: rockylinux/8
+      BOX: fedora/37-cloud-base
+      # v7.0.0 does not boot. v6.0.0 was not released.
+      BOX: rockylinux/8@5.0.0
   install_libvirt_vagrant_script: |
     apt-get update
     apt-get install -y libvirt-daemon libvirt-daemon-system vagrant vagrant-libvirt
@@ -38,6 +39,9 @@ task:
 
   integration_script: |
     vagrant up --provision-with=selinux,install-runc,install-gotestsum,test-integration
+
+  cri_integration_script: |
+    vagrant up --provision-with=selinux,install-runc,install-gotestsum,test-cri-integration
 
   cri_test_script: |
     vagrant up --provision-with=selinux,install-runc,install-gotestsum,test-cri

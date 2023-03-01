@@ -29,16 +29,18 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/oci"
+	"github.com/containerd/containerd/pkg/cri/instrument"
+	"github.com/containerd/containerd/pkg/cri/nri"
 	"github.com/containerd/containerd/pkg/cri/sbserver/podsandbox"
 	"github.com/containerd/containerd/pkg/cri/streaming"
 	"github.com/containerd/containerd/pkg/kmutex"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/sandbox"
+	runtime_alpha "github.com/containerd/containerd/third_party/k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
 	"github.com/containerd/go-cni"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
-	runtime_alpha "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
 
 	"github.com/containerd/containerd/pkg/cri/store/label"
 
@@ -56,24 +58,16 @@ import (
 // defaultNetworkPlugin is used for the default CNI configuration
 const defaultNetworkPlugin = "default"
 
-// grpcServices are all the grpc services provided by cri containerd.
-type grpcServices interface {
-	runtime.RuntimeServiceServer
-	runtime.ImageServiceServer
-}
-
-type grpcAlphaServices interface {
-	runtime_alpha.RuntimeServiceServer
-	runtime_alpha.ImageServiceServer
-}
-
 // CRIService is the interface implement CRI remote service server.
 type CRIService interface {
-	Run() error
-	// io.Closer is used by containerd to gracefully stop cri service.
+	runtime.RuntimeServiceServer
+	runtime.ImageServiceServer
+	// Closer is used by containerd to gracefully stop cri service.
 	io.Closer
+
+	Run() error
+
 	Register(*grpc.Server) error
-	grpcServices
 }
 
 // criService implements CRIService.
@@ -91,8 +85,9 @@ type criService struct {
 	sandboxNameIndex *registrar.Registrar
 	// containerStore stores all resources associated with containers.
 	containerStore *containerstore.Store
-	// sandboxController controls sandbox lifecycle (and hides implementation details behind).
-	sandboxController sandbox.Controller
+	// sandboxControllers contains different sandbox controller type,
+	// every controller controls sandbox lifecycle (and hides implementation details behind).
+	sandboxControllers map[criconfig.SandboxControllerMode]sandbox.Controller
 	// containerNameIndex stores all container names and make sure each
 	// name is unique.
 	containerNameIndex *registrar.Registrar
@@ -118,15 +113,20 @@ type criService struct {
 	baseOCISpecs map[string]*oci.Spec
 	// allCaps is the list of the capabilities.
 	// When nil, parsed from CapEff of /proc/self/status.
-	allCaps []string // nolint
+	allCaps []string //nolint:nolintlint,unused // Ignore on non-Linux
 	// unpackDuplicationSuppressor is used to make sure that there is only
 	// one in-flight fetch request or unpack handler for a given descriptor's
 	// or chain ID.
 	unpackDuplicationSuppressor kmutex.KeyedLocker
+	// containerEventsChan is used to capture container events and send them
+	// to the caller of GetContainerEvents.
+	containerEventsChan chan runtime.ContainerEventResponse
+	// nri is used to hook NRI into CRI request processing.
+	nri *nri.API
 }
 
 // NewCRIService returns a new instance of CRIService
-func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIService, error) {
+func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.API) (CRIService, error) {
 	var err error
 	labels := label.NewStore()
 	c := &criService{
@@ -142,7 +142,11 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 		initialized:                 atomic.NewBool(false),
 		netPlugin:                   make(map[string]cni.CNI),
 		unpackDuplicationSuppressor: kmutex.New(),
+		sandboxControllers:          make(map[criconfig.SandboxControllerMode]sandbox.Controller),
 	}
+
+	// TODO: figure out a proper channel size.
+	c.containerEventsChan = make(chan runtime.ContainerEventResponse, 1000)
 
 	if client.SnapshotService(c.config.ContainerdConfig.Snapshotter) == nil {
 		return nil, fmt.Errorf("failed to find snapshotter %q", c.config.ContainerdConfig.Snapshotter)
@@ -186,15 +190,25 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 		return nil, err
 	}
 
-	c.sandboxController = podsandbox.New(config, client, c.sandboxStore, c.os, c, c.baseOCISpecs)
+	// Load all sandbox controllers(pod sandbox controller and remote shim controller)
+	c.sandboxControllers[criconfig.ModePodSandbox] = podsandbox.New(config, client, c.sandboxStore, c.os, c, c.baseOCISpecs)
+	c.sandboxControllers[criconfig.ModeShim] = client.SandboxController()
+
+	c.nri = nri
 
 	return c, nil
 }
 
-// StartSandboxExitMonitor is a temporary workaround to call monitor from pause controller.
+// BackOffEvent is a temporary workaround to call eventMonitor from controller.Stop.
 // TODO: get rid of this.
-func (c *criService) StartSandboxExitMonitor(ctx context.Context, id string, pid uint32, exitCh <-chan containerd.ExitStatus) <-chan struct{} {
-	return c.eventMonitor.startSandboxExitMonitor(ctx, id, pid, exitCh)
+func (c *criService) BackOffEvent(id string, event interface{}) {
+	c.eventMonitor.backOff.enBackOff(id, event)
+}
+
+// GenerateAndSendContainerEvent is a temporary workaround to send PLEG events from podsandbopx/ controller
+// TODO: refactor PLEG event generator so both podsandbox/ controller and CRI service can access it.
+func (c *criService) GenerateAndSendContainerEvent(ctx context.Context, containerID string, sandboxID string, eventType runtime.ContainerEventType) {
+	c.generateAndSendContainerEvent(ctx, containerID, sandboxID, eventType)
 }
 
 // Register registers all required services onto a specific grpc server.
@@ -262,6 +276,11 @@ func (c *criService) Run() error {
 		}
 	}()
 
+	// register CRI domain with NRI
+	if err := c.nri.Register(&criImplementation{c}); err != nil {
+		return fmt.Errorf("failed to set up NRI for CRI service: %w", err)
+	}
+
 	// Set the server as initialized. GRPC services could start serving traffic.
 	c.initialized.Set()
 
@@ -281,24 +300,10 @@ func (c *criService) Run() error {
 		eventMonitorErr = err
 	}
 	logrus.Info("Event monitor stopped")
-	// There is a race condition with http.Server.Serve.
-	// When `Close` is called at the same time with `Serve`, `Close`
-	// may finish first, and `Serve` may still block.
-	// See https://github.com/golang/go/issues/20239.
-	// Here we set a 2 second timeout for the stream server wait,
-	// if it timeout, an error log is generated.
-	// TODO(random-liu): Get rid of this after https://github.com/golang/go/issues/20239
-	// is fixed.
-	const streamServerStopTimeout = 2 * time.Second
-	select {
-	case err := <-streamServerErrCh:
-		if err != nil {
-			streamServerErr = err
-		}
-		logrus.Info("Stream server stopped")
-	case <-time.After(streamServerStopTimeout):
-		logrus.Errorf("Stream server is not stopped in %q", streamServerStopTimeout)
+	if err := <-streamServerErrCh; err != nil {
+		streamServerErr = err
 	}
+	logrus.Info("Stream server stopped")
 	if eventMonitorErr != nil {
 		return fmt.Errorf("event monitor error: %w", eventMonitorErr)
 	}
@@ -327,13 +332,20 @@ func (c *criService) Close() error {
 	return nil
 }
 
+// IsInitialized indicates whether CRI service has finished initialization.
+func (c *criService) IsInitialized() bool {
+	return c.initialized.IsSet()
+}
+
 func (c *criService) register(s *grpc.Server) error {
-	instrumented := newInstrumentedService(c)
+	instrumented := instrument.NewService(c)
 	runtime.RegisterRuntimeServiceServer(s, instrumented)
 	runtime.RegisterImageServiceServer(s, instrumented)
-	instrumentedAlpha := newInstrumentedAlphaService(c)
+
+	instrumentedAlpha := instrument.NewAlphaService(c)
 	runtime_alpha.RegisterRuntimeServiceServer(s, instrumentedAlpha)
 	runtime_alpha.RegisterImageServiceServer(s, instrumentedAlpha)
+
 	return nil
 }
 
@@ -379,4 +391,17 @@ func loadBaseOCISpecs(config *criconfig.Config) (map[string]*oci.Spec, error) {
 	}
 
 	return specs, nil
+}
+
+// ValidateMode validate the given mod value,
+// returns err if mod is empty or unknown
+func ValidateMode(modeStr string) error {
+	switch modeStr {
+	case string(criconfig.ModePodSandbox), string(criconfig.ModeShim):
+		return nil
+	case "":
+		return fmt.Errorf("empty sandbox controller mode")
+	default:
+		return fmt.Errorf("unknown sandbox controller mode: %s", modeStr)
+	}
 }

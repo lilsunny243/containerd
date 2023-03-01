@@ -252,11 +252,13 @@ var Store_ServiceDesc = grpc.ServiceDesc{
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ControllerClient interface {
+	Create(ctx context.Context, in *ControllerCreateRequest, opts ...grpc.CallOption) (*ControllerCreateResponse, error)
 	Start(ctx context.Context, in *ControllerStartRequest, opts ...grpc.CallOption) (*ControllerStartResponse, error)
+	Platform(ctx context.Context, in *ControllerPlatformRequest, opts ...grpc.CallOption) (*ControllerPlatformResponse, error)
 	Stop(ctx context.Context, in *ControllerStopRequest, opts ...grpc.CallOption) (*ControllerStopResponse, error)
 	Wait(ctx context.Context, in *ControllerWaitRequest, opts ...grpc.CallOption) (*ControllerWaitResponse, error)
 	Status(ctx context.Context, in *ControllerStatusRequest, opts ...grpc.CallOption) (*ControllerStatusResponse, error)
-	Delete(ctx context.Context, in *ControllerDeleteRequest, opts ...grpc.CallOption) (*ControllerDeleteResponse, error)
+	Shutdown(ctx context.Context, in *ControllerShutdownRequest, opts ...grpc.CallOption) (*ControllerShutdownResponse, error)
 }
 
 type controllerClient struct {
@@ -267,9 +269,27 @@ func NewControllerClient(cc grpc.ClientConnInterface) ControllerClient {
 	return &controllerClient{cc}
 }
 
+func (c *controllerClient) Create(ctx context.Context, in *ControllerCreateRequest, opts ...grpc.CallOption) (*ControllerCreateResponse, error) {
+	out := new(ControllerCreateResponse)
+	err := c.cc.Invoke(ctx, "/containerd.services.sandbox.v1.Controller/Create", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *controllerClient) Start(ctx context.Context, in *ControllerStartRequest, opts ...grpc.CallOption) (*ControllerStartResponse, error) {
 	out := new(ControllerStartResponse)
 	err := c.cc.Invoke(ctx, "/containerd.services.sandbox.v1.Controller/Start", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controllerClient) Platform(ctx context.Context, in *ControllerPlatformRequest, opts ...grpc.CallOption) (*ControllerPlatformResponse, error) {
+	out := new(ControllerPlatformResponse)
+	err := c.cc.Invoke(ctx, "/containerd.services.sandbox.v1.Controller/Platform", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -303,9 +323,9 @@ func (c *controllerClient) Status(ctx context.Context, in *ControllerStatusReque
 	return out, nil
 }
 
-func (c *controllerClient) Delete(ctx context.Context, in *ControllerDeleteRequest, opts ...grpc.CallOption) (*ControllerDeleteResponse, error) {
-	out := new(ControllerDeleteResponse)
-	err := c.cc.Invoke(ctx, "/containerd.services.sandbox.v1.Controller/Delete", in, out, opts...)
+func (c *controllerClient) Shutdown(ctx context.Context, in *ControllerShutdownRequest, opts ...grpc.CallOption) (*ControllerShutdownResponse, error) {
+	out := new(ControllerShutdownResponse)
+	err := c.cc.Invoke(ctx, "/containerd.services.sandbox.v1.Controller/Shutdown", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -316,11 +336,13 @@ func (c *controllerClient) Delete(ctx context.Context, in *ControllerDeleteReque
 // All implementations must embed UnimplementedControllerServer
 // for forward compatibility
 type ControllerServer interface {
+	Create(context.Context, *ControllerCreateRequest) (*ControllerCreateResponse, error)
 	Start(context.Context, *ControllerStartRequest) (*ControllerStartResponse, error)
+	Platform(context.Context, *ControllerPlatformRequest) (*ControllerPlatformResponse, error)
 	Stop(context.Context, *ControllerStopRequest) (*ControllerStopResponse, error)
 	Wait(context.Context, *ControllerWaitRequest) (*ControllerWaitResponse, error)
 	Status(context.Context, *ControllerStatusRequest) (*ControllerStatusResponse, error)
-	Delete(context.Context, *ControllerDeleteRequest) (*ControllerDeleteResponse, error)
+	Shutdown(context.Context, *ControllerShutdownRequest) (*ControllerShutdownResponse, error)
 	mustEmbedUnimplementedControllerServer()
 }
 
@@ -328,8 +350,14 @@ type ControllerServer interface {
 type UnimplementedControllerServer struct {
 }
 
+func (UnimplementedControllerServer) Create(context.Context, *ControllerCreateRequest) (*ControllerCreateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Create not implemented")
+}
 func (UnimplementedControllerServer) Start(context.Context, *ControllerStartRequest) (*ControllerStartResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Start not implemented")
+}
+func (UnimplementedControllerServer) Platform(context.Context, *ControllerPlatformRequest) (*ControllerPlatformResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Platform not implemented")
 }
 func (UnimplementedControllerServer) Stop(context.Context, *ControllerStopRequest) (*ControllerStopResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Stop not implemented")
@@ -340,8 +368,8 @@ func (UnimplementedControllerServer) Wait(context.Context, *ControllerWaitReques
 func (UnimplementedControllerServer) Status(context.Context, *ControllerStatusRequest) (*ControllerStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
 }
-func (UnimplementedControllerServer) Delete(context.Context, *ControllerDeleteRequest) (*ControllerDeleteResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
+func (UnimplementedControllerServer) Shutdown(context.Context, *ControllerShutdownRequest) (*ControllerShutdownResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Shutdown not implemented")
 }
 func (UnimplementedControllerServer) mustEmbedUnimplementedControllerServer() {}
 
@@ -354,6 +382,24 @@ type UnsafeControllerServer interface {
 
 func RegisterControllerServer(s grpc.ServiceRegistrar, srv ControllerServer) {
 	s.RegisterService(&Controller_ServiceDesc, srv)
+}
+
+func _Controller_Create_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ControllerCreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControllerServer).Create(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/containerd.services.sandbox.v1.Controller/Create",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControllerServer).Create(ctx, req.(*ControllerCreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Controller_Start_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -370,6 +416,24 @@ func _Controller_Start_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ControllerServer).Start(ctx, req.(*ControllerStartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Controller_Platform_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ControllerPlatformRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControllerServer).Platform(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/containerd.services.sandbox.v1.Controller/Platform",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControllerServer).Platform(ctx, req.(*ControllerPlatformRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -428,20 +492,20 @@ func _Controller_Status_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Controller_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ControllerDeleteRequest)
+func _Controller_Shutdown_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ControllerShutdownRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControllerServer).Delete(ctx, in)
+		return srv.(ControllerServer).Shutdown(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/containerd.services.sandbox.v1.Controller/Delete",
+		FullMethod: "/containerd.services.sandbox.v1.Controller/Shutdown",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControllerServer).Delete(ctx, req.(*ControllerDeleteRequest))
+		return srv.(ControllerServer).Shutdown(ctx, req.(*ControllerShutdownRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -454,8 +518,16 @@ var Controller_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ControllerServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "Create",
+			Handler:    _Controller_Create_Handler,
+		},
+		{
 			MethodName: "Start",
 			Handler:    _Controller_Start_Handler,
+		},
+		{
+			MethodName: "Platform",
+			Handler:    _Controller_Platform_Handler,
 		},
 		{
 			MethodName: "Stop",
@@ -470,8 +542,8 @@ var Controller_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Controller_Status_Handler,
 		},
 		{
-			MethodName: "Delete",
-			Handler:    _Controller_Delete_Handler,
+			MethodName: "Shutdown",
+			Handler:    _Controller_Shutdown_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

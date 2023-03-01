@@ -18,12 +18,20 @@ package v2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/containerd/ttrpc"
+	"github.com/hashicorp/go-multierror"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
 
 	eventstypes "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
@@ -32,15 +40,12 @@ import (
 	"github.com/containerd/containerd/events/exchange"
 	"github.com/containerd/containerd/identifiers"
 	"github.com/containerd/containerd/log"
-	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/containerd/pkg/dialer"
 	"github.com/containerd/containerd/pkg/timeout"
 	"github.com/containerd/containerd/protobuf"
 	ptypes "github.com/containerd/containerd/protobuf/types"
 	"github.com/containerd/containerd/runtime"
 	client "github.com/containerd/containerd/runtime/v2/shim"
-	"github.com/containerd/ttrpc"
-	"github.com/hashicorp/go-multierror"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -55,31 +60,23 @@ func init() {
 	timeout.Set(shutdownTimeout, 3*time.Second)
 }
 
-func loadAddress(path string) (string, error) {
+func loadAddress(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(data), nil
+	return data, nil
 }
 
-func loadShim(ctx context.Context, bundle *Bundle, onClose func()) (_ ShimInstance, err error) {
+func loadShim(ctx context.Context, bundle *Bundle, onClose func()) (_ ShimInstance, retErr error) {
 	address, err := loadAddress(filepath.Join(bundle.Path, "address"))
 	if err != nil {
 		return nil, err
 	}
-	conn, err := client.Connect(address, client.AnonReconnectDialer)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			conn.Close()
-		}
-	}()
+
 	shimCtx, cancelShimLog := context.WithCancel(ctx)
 	defer func() {
-		if err != nil {
+		if retErr != nil {
 			cancelShimLog()
 		}
 	}()
@@ -88,7 +85,7 @@ func loadShim(ctx context.Context, bundle *Bundle, onClose func()) (_ ShimInstan
 		return nil, fmt.Errorf("open shim log pipe when reload: %w", err)
 	}
 	defer func() {
-		if err != nil {
+		if retErr != nil {
 			f.Close()
 		}
 	}()
@@ -111,41 +108,52 @@ func loadShim(ctx context.Context, bundle *Bundle, onClose func()) (_ ShimInstan
 		cancelShimLog()
 		f.Close()
 	}
-	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
+
+	params, err := parseStartResponse(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := makeConnection(ctx, params, onCloseWithShimLog)
+	if err != nil {
+		return nil, err
+	}
+
 	defer func() {
-		if err != nil {
-			client.Close()
+		if retErr != nil {
+			conn.Close()
 		}
 	}()
+
 	shim := &shim{
 		bundle: bundle,
-		client: client,
+		client: conn,
 	}
+
 	ctx, cancel := timeout.WithContext(ctx, loadTimeout)
 	defer cancel()
+
 	// Check connectivity, TaskService is the only required service, so create a temp one to check connection.
-	s := newShimTask(shim)
+	s, err := newShimTask(shim)
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err := s.PID(ctx); err != nil {
 		return nil, err
 	}
+
 	return shim, nil
 }
 
-func cleanupAfterDeadShim(ctx context.Context, id, ns string, rt *runtime.NSMap[ShimInstance], events *exchange.Exchange, binaryCall *binary) {
-	ctx = namespaces.WithNamespace(ctx, ns)
+func cleanupAfterDeadShim(ctx context.Context, id string, rt *runtime.NSMap[ShimInstance], events *exchange.Exchange, binaryCall *binary) {
 	ctx, cancel := timeout.WithContext(ctx, cleanupTimeout)
 	defer cancel()
 
-	log.G(ctx).WithFields(logrus.Fields{
-		"id":        id,
-		"namespace": ns,
-	}).Warn("cleaning up after shim disconnected")
+	log.G(ctx).WithField("id", id).Warn("cleaning up after shim disconnected")
 	response, err := binaryCall.Delete(ctx)
 	if err != nil {
-		log.G(ctx).WithError(err).WithFields(logrus.Fields{
-			"id":        id,
-			"namespace": ns,
-		}).Warn("failed to clean up after shim disconnected")
+		log.G(ctx).WithError(err).WithField("id", id).Warn("failed to clean up after shim disconnected")
 	}
 
 	if _, err := rt.Get(ctx, id); err != nil {
@@ -185,21 +193,132 @@ func cleanupAfterDeadShim(ctx context.Context, id, ns string, rt *runtime.NSMap[
 
 // ShimInstance represents running shim process managed by ShimManager.
 type ShimInstance interface {
+	io.Closer
+
 	// ID of the shim.
 	ID() string
 	// Namespace of this shim.
 	Namespace() string
 	// Bundle is a file system path to shim's bundle.
 	Bundle() string
-	// Client returns the underlying TTRPC client for this shim.
-	Client() *ttrpc.Client
+	// Client returns the underlying TTRPC or GRPC client object for this shim.
+	// The underlying object can be either *ttrpc.Client or grpc.ClientConnInterface.
+	Client() any
 	// Delete will close the client and remove bundle from disk.
 	Delete(ctx context.Context) error
 }
 
+func parseStartResponse(ctx context.Context, response []byte) (client.BootstrapParams, error) {
+	var params client.BootstrapParams
+
+	if err := json.Unmarshal(response, &params); err != nil || params.Version < 2 {
+		// Use TTRPC for legacy shims
+		params.Address = string(response)
+		params.Protocol = "ttrpc"
+	}
+
+	if params.Version > 2 {
+		return client.BootstrapParams{}, fmt.Errorf("unsupported shim version (%d): %w", params.Version, errdefs.ErrNotImplemented)
+	}
+
+	return params, nil
+}
+
+// makeConnection creates a new TTRPC or GRPC connection object from address.
+// address can be either a socket path for TTRPC or JSON serialized BootstrapParams.
+func makeConnection(ctx context.Context, params client.BootstrapParams, onClose func()) (_ io.Closer, retErr error) {
+	log.G(ctx).WithFields(log.Fields{
+		"address":  params.Address,
+		"protocol": params.Protocol,
+	}).Debug("shim bootstrap parameters")
+
+	switch strings.ToLower(params.Protocol) {
+	case "ttrpc":
+		conn, err := client.Connect(params.Address, client.AnonReconnectDialer)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create TTRPC connection: %w", err)
+		}
+		defer func() {
+			if retErr != nil {
+				conn.Close()
+			}
+		}()
+
+		return ttrpc.NewClient(conn, ttrpc.WithOnClose(onClose)), nil
+	case "grpc":
+		ctx, cancel := context.WithTimeout(ctx, time.Second*100)
+		defer cancel()
+
+		gopts := []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+		}
+		return grpcDialContext(ctx, dialer.DialAddress(params.Address), onClose, gopts...)
+	default:
+		return nil, fmt.Errorf("unexpected protocol: %q", params.Protocol)
+	}
+}
+
+// grpcDialContext and the underlying grpcConn type exist solely
+// so we can have something similar to ttrpc.WithOnClose to have
+// a callback run when the connection is severed or explicitly closed.
+func grpcDialContext(
+	ctx context.Context,
+	target string,
+	onClose func(),
+	gopts ...grpc.DialOption,
+) (*grpcConn, error) {
+	client, err := grpc.DialContext(ctx, target, gopts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GRPC connection: %w", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		gctx := context.Background()
+		sourceState := connectivity.Ready
+		for {
+			if client.WaitForStateChange(gctx, sourceState) {
+				state := client.GetState()
+				if state == connectivity.Idle || state == connectivity.Shutdown {
+					break
+				}
+				// Could be transient failure. Lets see if we can get back to a working
+				// state.
+				log.G(gctx).WithFields(log.Fields{
+					"state": state,
+					"addr":  target,
+				}).Warn("shim grpc connection unexpected state")
+				sourceState = state
+			}
+		}
+		onClose()
+		close(done)
+	}()
+
+	return &grpcConn{
+		ClientConn:  client,
+		onCloseDone: done,
+	}, nil
+}
+
+type grpcConn struct {
+	*grpc.ClientConn
+	onCloseDone chan struct{}
+}
+
+func (gc *grpcConn) UserOnCloseWait(ctx context.Context) error {
+	select {
+	case <-gc.onCloseDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type shim struct {
 	bundle *Bundle
-	client *ttrpc.Client
+	client any
 }
 
 var _ ShimInstance = (*shim)(nil)
@@ -217,8 +336,21 @@ func (s *shim) Bundle() string {
 	return s.bundle.Path
 }
 
-func (s *shim) Client() *ttrpc.Client {
+func (s *shim) Client() any {
 	return s.client
+}
+
+// Close closes the underlying client connection.
+func (s *shim) Close() error {
+	if ttrpcClient, ok := s.client.(*ttrpc.Client); ok {
+		return ttrpcClient.Close()
+	}
+
+	if grpcClient, ok := s.client.(*grpcConn); ok {
+		return grpcClient.Close()
+	}
+
+	return nil
 }
 
 func (s *shim) Delete(ctx context.Context) error {
@@ -226,12 +358,24 @@ func (s *shim) Delete(ctx context.Context) error {
 		result *multierror.Error
 	)
 
-	if err := s.client.Close(); err != nil {
-		result = multierror.Append(result, fmt.Errorf("failed to close ttrpc client: %w", err))
+	if ttrpcClient, ok := s.client.(*ttrpc.Client); ok {
+		if err := ttrpcClient.Close(); err != nil {
+			result = multierror.Append(result, fmt.Errorf("failed to close ttrpc client: %w", err))
+		}
+
+		if err := ttrpcClient.UserOnCloseWait(ctx); err != nil {
+			result = multierror.Append(result, fmt.Errorf("close wait error: %w", err))
+		}
 	}
 
-	if err := s.client.UserOnCloseWait(ctx); err != nil {
-		result = multierror.Append(result, fmt.Errorf("close wait error: %w", err))
+	if grpcClient, ok := s.client.(*grpcConn); ok {
+		if err := grpcClient.Close(); err != nil {
+			result = multierror.Append(result, fmt.Errorf("failed to close grpc client: %w", err))
+		}
+
+		if err := grpcClient.UserOnCloseWait(ctx); err != nil {
+			result = multierror.Append(result, fmt.Errorf("close wait error: %w", err))
+		}
 	}
 
 	if err := s.bundle.Delete(); err != nil {
@@ -250,11 +394,16 @@ type shimTask struct {
 	task task.TaskService
 }
 
-func newShimTask(shim ShimInstance) *shimTask {
+func newShimTask(shim ShimInstance) (*shimTask, error) {
+	taskClient, err := NewTaskClient(shim.Client())
+	if err != nil {
+		return nil, err
+	}
+
 	return &shimTask{
 		ShimInstance: shim,
-		task:         task.NewTaskClient(shim.Client()),
-	}
+		task:         taskClient,
+	}, nil
 }
 
 func (s *shimTask) Shutdown(ctx context.Context) error {
@@ -359,6 +508,7 @@ func (s *shimTask) Create(ctx context.Context, opts runtime.CreateOpts) (runtime
 		request.Rootfs = append(request.Rootfs, &types.Mount{
 			Type:    m.Type,
 			Source:  m.Source,
+			Target:  m.Target,
 			Options: m.Options,
 		})
 	}

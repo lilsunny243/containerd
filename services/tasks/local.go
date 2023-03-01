@@ -39,6 +39,8 @@ import (
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/metadata"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/pkg/blockio"
+	"github.com/containerd/containerd/pkg/rdt"
 	"github.com/containerd/containerd/pkg/timeout"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/protobuf"
@@ -48,7 +50,7 @@ import (
 	"github.com/containerd/containerd/runtime/linux/runctypes"
 	"github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/containerd/services"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"google.golang.org/grpc"
@@ -141,10 +143,10 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 		l.monitor.Monitor(t, nil)
 	}
 
-	if err := initBlockIO(config.BlockIOConfigFile); err != nil {
+	if err := blockio.SetConfig(config.BlockIOConfigFile); err != nil {
 		log.G(ic.Context).WithError(err).Errorf("blockio initialization failed")
 	}
-	if err := initRdt(config.RdtConfigFile); err != nil {
+	if err := rdt.SetConfig(config.RdtConfigFile); err != nil {
 		log.G(ic.Context).WithError(err).Errorf("RDT initialization failed")
 	}
 
@@ -215,6 +217,7 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 		opts.Rootfs = append(opts.Rootfs, mount.Mount{
 			Type:    m.Type,
 			Source:  m.Source,
+			Target:  m.Target,
 			Options: m.Options,
 		})
 	}

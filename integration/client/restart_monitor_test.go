@@ -36,12 +36,11 @@ import (
 	"github.com/containerd/containerd/pkg/testutil"
 	"github.com/containerd/containerd/runtime/restart"
 	srvconfig "github.com/containerd/containerd/services/server/config"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	exec "golang.org/x/sys/execabs"
 )
 
-// the following nolint is for shutting up gometalinter on non-linux.
-// nolint: unused
+//nolint:unused // Ignore on non-Linux
 func newDaemonWithConfig(t *testing.T, configTOML string) (*Client, *daemon, func()) {
 	if testing.Short() {
 		t.Skip()

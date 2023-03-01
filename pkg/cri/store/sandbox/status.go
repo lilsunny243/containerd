@@ -29,24 +29,24 @@ import (
 //                    |              |
 //                    | Create(Run)  | Load
 //                    |              |
-//      Start         |              |
-//     (failed)       |              |
-// +------------------+              +-----------+
-// |                  |              |           |
-// |                  |              |           |
-// |                  |              |           |
-// |                  | Start(Run)   |           |
-// |                  |              |           |
-// | PortForward +----v----+         |           |
-// |      +------+         |         |           |
-// |      |      |  READY  <---------+           |
-// |      +------>         |         |           |
-// |             +----+----+         |           |
-// |                  |              |           |
-// |                  | Stop/Exit    |           |
-// |                  |              |           |
-// |             +----v----+         |           |
-// |             |         <---------+      +----v----+
+//                    |              |
+//                    |              |    Start
+//                    |              |(failed and not cleaned)
+//      Start         |--------------|--------------+
+//(failed but cleaned)|              |              |
+// +------------------+              |-----------+  |
+// |                  | Start(Run)   |           |  |
+// |                  |              |           |  |
+// | PortForward +----v----+         |           |  |
+// |      +------+         |         |           |  |
+// |      |      |  READY  <---------+           |  |
+// |      +------>         |         |           |  |
+// |             +----+----+         |           |  |
+// |                  |              |           |  |
+// |                  | Stop/Exit    |           |  |
+// |                  |              |           |  |
+// |             +----v----+         |           |  |
+// |             |         <---------+      +----v--v-+
 // |             | NOTREADY|                |         |
 // |             |         <----------------+ UNKNOWN |
 // |             +----+----+       Stop     |         |
@@ -99,6 +99,10 @@ type Status struct {
 	Pid uint32
 	// CreatedAt is the created timestamp.
 	CreatedAt time.Time
+	// ExitedAt is the stop timestamp
+	ExitedAt time.Time
+	// ExitStatus is the stop sandbox status
+	ExitStatus uint32
 	// State is the state of the sandbox.
 	State State
 }

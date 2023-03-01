@@ -75,6 +75,7 @@ WHALE = "🇩"
 ONI = "👹"
 
 RELEASE=containerd-$(VERSION:v%=%)-${GOOS}-${GOARCH}
+STATICRELEASE=containerd-static-$(VERSION:v%=%)-${GOOS}-${GOARCH}
 CRIRELEASE=cri-containerd-$(VERSION:v%=%)-${GOOS}-${GOARCH}
 CRICNIRELEASE=cri-containerd-cni-$(VERSION:v%=%)-${GOOS}-${GOARCH}
 
@@ -123,7 +124,7 @@ ifdef SKIPTESTS
 endif
 
 #Replaces ":" (*nix), ";" (windows) with newline for easy parsing
-GOPATHS=$(shell echo ${GOPATH} | tr ":" "\n" | tr ";" "\n")
+GOPATHS=$(shell go env GOPATH | tr ":" "\n" | tr ";" "\n")
 
 TESTFLAGS_RACE=
 GO_BUILD_FLAGS=
@@ -148,7 +149,7 @@ GOTEST ?= $(GO) test
 OUTPUTDIR = $(join $(ROOTDIR), _output)
 CRIDIR=$(OUTPUTDIR)/cri
 
-.PHONY: clean all AUTHORS build binaries test integration generate protos check-protos coverage ci check help install uninstall vendor release mandir install-man genman install-cri-deps cri-release cri-cni-release cri-integration install-deps bin/cri-integration.test
+.PHONY: clean all AUTHORS build binaries test integration generate protos check-protos coverage ci check help install uninstall vendor release static-release mandir install-man genman install-cri-deps cri-release cri-cni-release cri-integration install-deps bin/cri-integration.test
 .DEFAULT: default
 
 # Forcibly set the default goal to all, in case an include above brought in a rule definition.
@@ -220,7 +221,7 @@ bin/cri-integration.test:
 
 cri-integration: binaries bin/cri-integration.test ## run cri integration tests (example: FOCUS=TestContainerListStats make cri-integration)
 	@echo "$(WHALE) $@"
-	@bash -x ./script/test/cri-integration.sh
+	@bash ./script/test/cri-integration.sh
 	@rm -rf bin/cri-integration.test
 
 # build runc shimv2 with failpoint control, only used by integration test
@@ -299,17 +300,39 @@ install-man: man
 	$(foreach manpage,$(addprefix man/,$(MANPAGES)), $(call installmanpage,$(manpage),$(subst .,,$(suffix $(manpage))),$(notdir $(manpage))))
 
 
+define pack_release
+	@rm -rf releases/$(1) releases/$(1).tar.gz
+	@$(INSTALL) -d releases/$(1)/bin
+	@$(INSTALL) $(BINARIES) releases/$(1)/bin
+	@tar -czf releases/$(1).tar.gz -C releases/$(1) bin
+	@rm -rf releases/$(1)
+endef
+
+
 releases/$(RELEASE).tar.gz: $(BINARIES)
 	@echo "$(WHALE) $@"
-	@rm -rf releases/$(RELEASE) releases/$(RELEASE).tar.gz
-	@$(INSTALL) -d releases/$(RELEASE)/bin
-	@$(INSTALL) $(BINARIES) releases/$(RELEASE)/bin
-	@tar -czf releases/$(RELEASE).tar.gz -C releases/$(RELEASE) bin
-	@rm -rf releases/$(RELEASE)
+	$(call pack_release,$(RELEASE))
 
 release: releases/$(RELEASE).tar.gz
 	@echo "$(WHALE) $@"
 	@cd releases && sha256sum $(RELEASE).tar.gz >$(RELEASE).tar.gz.sha256sum
+
+releases/$(STATICRELEASE).tar.gz:
+ifeq ($(GOOS),linux)
+	@make STATIC=1 $(BINARIES)
+	@echo "$(WHALE) $@"
+	$(call pack_release,$(STATICRELEASE))
+else
+	@echo "Skipping $(STATICRELEASE) for $(GOOS)"
+endif
+
+static-release: releases/$(STATICRELEASE).tar.gz
+ifeq ($(GOOS),linux)
+	@echo "$(WHALE) $@"
+	@cd releases && sha256sum $(STATICRELEASE).tar.gz >$(STATICRELEASE).tar.gz.sha256sum
+else
+	@echo "Skipping releasing $(STATICRELEASE) for $(GOOS)"
+endif
 
 # install of cri deps into release output directory
 ifeq ($(GOOS),windows)
@@ -337,22 +360,26 @@ install-cri-deps: $(BINARIES)
 	@$(INSTALL) $(BINARIES) $(CRIDIR)/bin
 endif
 
+$(CRIDIR)/cri-containerd.DEPRECATED.txt:
+	@mkdir -p $(CRIDIR)
+	@$(INSTALL) -m 644 releases/cri-containerd.DEPRECATED.txt $@
+
 ifeq ($(GOOS),windows)
-releases/$(CRIRELEASE).tar.gz: install-cri-deps
+releases/$(CRIRELEASE).tar.gz: install-cri-deps $(CRIDIR)/cri-containerd.DEPRECATED.txt
 	@echo "$(WHALE) $@"
 	@cd $(CRIDIR) && tar -czf ../../releases/$(CRIRELEASE).tar.gz *
 
-releases/$(CRICNIRELEASE).tar.gz: install-cri-deps
+releases/$(CRICNIRELEASE).tar.gz: install-cri-deps $(CRIDIR)/cri-containerd.DEPRECATED.txt
 	@echo "$(WHALE) $@"
 	@cd $(CRIDIR) && tar -czf ../../releases/$(CRICNIRELEASE).tar.gz *
 else
-releases/$(CRIRELEASE).tar.gz: install-cri-deps
+releases/$(CRIRELEASE).tar.gz: install-cri-deps $(CRIDIR)/cri-containerd.DEPRECATED.txt
 	@echo "$(WHALE) $@"
-	@tar -czf releases/$(CRIRELEASE).tar.gz -C $(CRIDIR) etc/crictl.yaml etc/systemd usr opt/containerd
+	@tar -czf releases/$(CRIRELEASE).tar.gz -C $(CRIDIR) cri-containerd.DEPRECATED.txt etc/crictl.yaml etc/systemd usr opt/containerd
 
-releases/$(CRICNIRELEASE).tar.gz: install-cri-deps
+releases/$(CRICNIRELEASE).tar.gz: install-cri-deps $(CRIDIR)/cri-containerd.DEPRECATED.txt
 	@echo "$(WHALE) $@"
-	@tar -czf releases/$(CRICNIRELEASE).tar.gz -C $(CRIDIR) etc usr opt
+	@tar -czf releases/$(CRICNIRELEASE).tar.gz -C $(CRIDIR) cri-containerd.DEPRECATED.txt etc usr opt
 endif
 
 cri-release: releases/$(CRIRELEASE).tar.gz

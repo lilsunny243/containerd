@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
@@ -37,7 +39,7 @@ import (
 	"github.com/containerd/containerd/reference/docker"
 	"github.com/containerd/containerd/runtime/linux/runctypes"
 	runcoptions "github.com/containerd/containerd/runtime/v2/runc/options"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 
@@ -354,6 +356,16 @@ func generateRuntimeOptions(r criconfig.Runtime, c criconfig.Config) (interface{
 	if err := optionsTree.Unmarshal(options); err != nil {
 		return nil, err
 	}
+
+	// For generic configuration, if no config path specified (preserving old behavior), pass
+	// the whole TOML configuration section to the runtime.
+	if runtimeOpts, ok := options.(*runtimeoptions.Options); ok && runtimeOpts.ConfigPath == "" {
+		runtimeOpts.ConfigBody, err = optionsTree.Marshal()
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal TOML blob for runtime %q: %v", r.Type, err)
+		}
+	}
+
 	return options, nil
 }
 
@@ -471,7 +483,7 @@ func copyResourcesToStatus(spec *runtimespec.Spec, status containerstore.Status)
 		}
 
 		if spec.Linux.Resources.HugepageLimits != nil {
-			hugepageLimits := make([]*runtime.HugepageLimit, len(spec.Linux.Resources.HugepageLimits))
+			hugepageLimits := make([]*runtime.HugepageLimit, 0, len(spec.Linux.Resources.HugepageLimits))
 			for _, l := range spec.Linux.Resources.HugepageLimits {
 				hugepageLimits = append(hugepageLimits, &runtime.HugepageLimit{
 					PageSize: l.Pagesize,
@@ -495,7 +507,11 @@ func copyResourcesToStatus(spec *runtimespec.Spec, status containerstore.Status)
 		if spec.Windows.Resources.CPU != nil {
 			if spec.Windows.Resources.CPU.Shares != nil {
 				status.Resources.Windows.CpuShares = int64(*spec.Windows.Resources.CPU.Shares)
+			}
+			if spec.Windows.Resources.CPU.Count != nil {
 				status.Resources.Windows.CpuCount = int64(*spec.Windows.Resources.CPU.Count)
+			}
+			if spec.Windows.Resources.CPU.Maximum != nil {
 				status.Resources.Windows.CpuMaximum = int64(*spec.Windows.Resources.CPU.Maximum)
 			}
 		}
@@ -509,4 +525,85 @@ func copyResourcesToStatus(spec *runtimespec.Spec, status containerstore.Status)
 		// TODO: Figure out how to get RootfsSizeInBytes
 	}
 	return status
+}
+
+func (c *criService) generateAndSendContainerEvent(ctx context.Context, containerID string, sandboxID string, eventType runtime.ContainerEventType) {
+	podSandboxStatus, err := c.getPodSandboxStatus(ctx, sandboxID)
+	if err != nil {
+		logrus.Warnf("Failed to get podSandbox status for container event for sandboxID %q: %v. Sending the event with nil podSandboxStatus.", sandboxID, err)
+		podSandboxStatus = nil
+	}
+	containerStatuses, err := c.getContainerStatuses(ctx, sandboxID)
+	if err != nil {
+		logrus.Errorf("Failed to get container statuses for container event for sandboxID %q: %v", sandboxID, err)
+	}
+
+	event := runtime.ContainerEventResponse{
+		ContainerId:        containerID,
+		ContainerEventType: eventType,
+		CreatedAt:          time.Now().UnixNano(),
+		PodSandboxStatus:   podSandboxStatus,
+		ContainersStatuses: containerStatuses,
+	}
+
+	// TODO(ruiwen-zhao): write events to a cache, storage, or increase the size of the channel
+	select {
+	case c.containerEventsChan <- event:
+	default:
+		logrus.Debugf("containerEventsChan is full, discarding event %+v", event)
+	}
+}
+
+func (c *criService) getPodSandboxStatus(ctx context.Context, podSandboxID string) (*runtime.PodSandboxStatus, error) {
+	request := &runtime.PodSandboxStatusRequest{PodSandboxId: podSandboxID}
+	response, err := c.PodSandboxStatus(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return response.GetStatus(), nil
+}
+
+func (c *criService) getContainerStatuses(ctx context.Context, podSandboxID string) ([]*runtime.ContainerStatus, error) {
+	response, err := c.ListContainers(ctx, &runtime.ListContainersRequest{
+		Filter: &runtime.ContainerFilter{
+			PodSandboxId: podSandboxID,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	containerStatuses := []*runtime.ContainerStatus{}
+	for _, container := range response.Containers {
+		statusResp, err := c.ContainerStatus(ctx, &runtime.ContainerStatusRequest{
+			ContainerId: container.Id,
+			Verbose:     false,
+		})
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		containerStatuses = append(containerStatuses, statusResp.GetStatus())
+	}
+	return containerStatuses, nil
+}
+
+// hostNetwork handles checking if host networking was requested.
+func hostNetwork(config *runtime.PodSandboxConfig) bool {
+	var hostNet bool
+	switch goruntime.GOOS {
+	case "windows":
+		// Windows HostProcess pods can only run on the host network
+		hostNet = config.GetWindows().GetSecurityContext().GetHostProcess()
+	case "darwin":
+		// No CNI on Darwin yet.
+		hostNet = true
+	default:
+		// Even on other platforms, the logic containerd uses is to check if NamespaceMode == NODE.
+		// So this handles Linux, as well as any other platforms not governed by the cases above
+		// that have special quirks.
+		hostNet = config.GetLinux().GetSecurityContext().GetNamespaceOptions().GetNetwork() == runtime.NamespaceMode_NODE
+	}
+	return hostNet
 }

@@ -26,6 +26,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/identity"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	exec "golang.org/x/sys/execabs"
+
 	. "github.com/containerd/containerd"
 	"github.com/containerd/containerd/defaults"
 	"github.com/containerd/containerd/errdefs"
@@ -36,21 +42,19 @@ import (
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/pkg/testutil"
 	"github.com/containerd/containerd/platforms"
-	"github.com/opencontainers/go-digest"
-	"github.com/opencontainers/image-spec/identity"
-	"github.com/sirupsen/logrus"
-	exec "golang.org/x/sys/execabs"
 )
 
 var (
 	noDaemon     bool
 	noCriu       bool
 	supportsCriu bool
+	noShimCgroup bool
 )
 
 func init() {
 	flag.BoolVar(&noDaemon, "no-daemon", false, "Do not start a dedicated daemon for the tests")
 	flag.BoolVar(&noCriu, "no-criu", false, "Do not run the checkpoint tests")
+	flag.BoolVar(&noShimCgroup, "no-shim-cgroup", false, "Do not run the shim cgroup tests")
 }
 
 func TestMain(m *testing.M) {
@@ -118,7 +122,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// allow comparison with containerd under test
-	log.G(ctx).WithFields(logrus.Fields{
+	log.G(ctx).WithFields(log.Fields{
 		"version":     version.Version,
 		"revision":    version.Revision,
 		"runtime":     os.Getenv("TEST_RUNTIME"),
@@ -453,6 +457,34 @@ func TestImagePullWithConcurrencyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestImagePullWithTracing(t *testing.T) {
+	client, err := newClient(t, address)
+	require.NoError(t, err)
+	defer client.Close()
+
+	ctx := namespaces.WithNamespace(context.Background(), "tracing")
+
+	//create in memory exporter and global tracer provider for test
+	exp, tp := newInMemoryExporterTracer()
+	//set the tracer provider global available
+	otel.SetTracerProvider(tp)
+	// Shutdown properly so nothing leaks.
+	defer func() { _ = tp.Shutdown(ctx) }()
+
+	//do an image pull which is instrumented, we should expect spans in the exporter
+	_, err = client.Pull(ctx, testImage, WithPlatformMatcher(platforms.Default()))
+	require.NoError(t, err)
+
+	err = tp.ForceFlush(ctx)
+	require.NoError(t, err)
+
+	//The span name was defined in client.pull when instrumented it
+	spanNameExpected := "pull.Pull"
+	spans := exp.GetSpans()
+	validateRootSpan(t, spanNameExpected, spans)
+
 }
 
 func TestClientReconnect(t *testing.T) {

@@ -30,6 +30,7 @@ import "google/protobuf/timestamp.proto";
 
 import "github.com/containerd/containerd/api/types/sandbox.proto";
 import "github.com/containerd/containerd/api/types/mount.proto";
+import "github.com/containerd/containerd/api/types/platform.proto";
 
 option go_package = "github.com/containerd/containerd/api/services/sandbox/v1;sandbox";
 
@@ -85,17 +86,27 @@ message StoreGetResponse {
 
 // Controller is an interface to manage runtime sandbox instances.
 service Controller {
+	rpc Create(ControllerCreateRequest) returns (ControllerCreateResponse);
 	rpc Start(ControllerStartRequest) returns (ControllerStartResponse);
+	rpc Platform(ControllerPlatformRequest) returns (ControllerPlatformResponse);
 	rpc Stop(ControllerStopRequest) returns (ControllerStopResponse);
 	rpc Wait(ControllerWaitRequest) returns (ControllerWaitResponse);
 	rpc Status(ControllerStatusRequest) returns (ControllerStatusResponse);
-	rpc Delete(ControllerDeleteRequest) returns (ControllerDeleteResponse);
+	rpc Shutdown(ControllerShutdownRequest) returns (ControllerShutdownResponse);
+}
+
+message ControllerCreateRequest {
+	string sandbox_id = 1;
+	repeated containerd.types.Mount rootfs = 2;
+	google.protobuf.Any options = 3;
+}
+
+message ControllerCreateResponse {
+	string sandbox_id = 1;
 }
 
 message ControllerStartRequest {
 	string sandbox_id = 1;
-	repeated containerd.types.Mount rootfs = 2;
-	google.protobuf.Any options = 3;
 }
 
 message ControllerStartResponse {
@@ -103,6 +114,14 @@ message ControllerStartResponse {
 	uint32 pid = 2;
 	google.protobuf.Timestamp created_at = 3;
 	map<string, string> labels = 4;
+}
+
+message ControllerPlatformRequest {
+	string sandbox_id = 1;
+}
+
+message ControllerPlatformResponse {
+	containerd.types.Platform platform = 1;
 }
 
 message ControllerStopRequest {
@@ -123,19 +142,21 @@ message ControllerWaitResponse {
 
 message ControllerStatusRequest {
 	string sandbox_id = 1;
+	bool verbose = 2;
 }
 
 message ControllerStatusResponse {
-	string id = 1;
+	string sandbox_id = 1;
 	uint32 pid = 2;
 	string state = 3;
-	uint32 exit_status = 4;
-	google.protobuf.Timestamp exited_at = 5;
-	google.protobuf.Any extra = 6;
+	map<string, string> info = 4;
+	google.protobuf.Timestamp created_at = 5;
+	google.protobuf.Timestamp exited_at = 6;
+	google.protobuf.Any extra = 7;
 }
 
-message ControllerDeleteRequest {
+message ControllerShutdownRequest {
 	string sandbox_id = 1;
 }
 
-message ControllerDeleteResponse {}
+message ControllerShutdownResponse {}

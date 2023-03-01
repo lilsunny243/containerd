@@ -26,6 +26,7 @@ import (
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/containerd/pkg/cleanup"
 )
 
 func (m *ShimManager) loadExistingTasks(ctx context.Context) error {
@@ -60,6 +61,8 @@ func (m *ShimManager) loadShims(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ctx = log.WithLogger(ctx, log.G(ctx).WithField("namespace", ns))
+
 	shimDirs, err := os.ReadDir(filepath.Join(m.state, ns))
 	if err != nil {
 		return err
@@ -107,7 +110,7 @@ func (m *ShimManager) loadShims(ctx context.Context) error {
 			container, err := m.containers.Get(ctx, id)
 			if err != nil {
 				log.G(ctx).WithError(err).Errorf("loading container %s", id)
-				if err := mount.UnmountAll(filepath.Join(bundle.Path, "rootfs"), 0); err != nil {
+				if err := mount.UnmountRecursive(filepath.Join(bundle.Path, "rootfs"), 0); err != nil {
 					log.G(ctx).WithError(err).Errorf("failed to unmount of rootfs %s", id)
 				}
 				bundle.Delete()
@@ -133,15 +136,18 @@ func (m *ShimManager) loadShims(ctx context.Context) error {
 		instance, err := loadShim(ctx, bundle, func() {
 			log.G(ctx).WithField("id", id).Info("shim disconnected")
 
-			cleanupAfterDeadShim(context.Background(), id, ns, m.shims, m.events, binaryCall)
+			cleanupAfterDeadShim(cleanup.Background(ctx), id, m.shims, m.events, binaryCall)
 			// Remove self from the runtime task list.
 			m.shims.Delete(ctx, id)
 		})
 		if err != nil {
-			cleanupAfterDeadShim(ctx, id, ns, m.shims, m.events, binaryCall)
+			cleanupAfterDeadShim(ctx, id, m.shims, m.events, binaryCall)
 			continue
 		}
-		shim := newShimTask(instance)
+		shim, err := newShimTask(instance)
+		if err != nil {
+			return err
+		}
 
 		// There are 3 possibilities for the loaded shim here:
 		// 1. It could be a shim that is running a task.

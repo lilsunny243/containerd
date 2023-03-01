@@ -22,6 +22,8 @@ import (
 	goruntime "runtime"
 	"testing"
 
+	"github.com/containerd/containerd/platforms"
+
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +35,8 @@ import (
 	"github.com/containerd/containerd/pkg/cri/constants"
 	"github.com/containerd/containerd/pkg/cri/opts"
 )
+
+var currentPlatform = platforms.DefaultSpec()
 
 func checkMount(t *testing.T, mounts []runtimespec.Mount, src, dest, typ string,
 	contains, notcontains []string) {
@@ -63,7 +67,7 @@ func TestGeneralContainerSpec(t *testing.T) {
 	c := newTestCRIService()
 	testSandboxID := "sandbox-id"
 	testContainerName := "container-name"
-	spec, err := c.containerSpec(testID, testSandboxID, testPid, "", testContainerName, testImageName, containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
+	spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName, containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
 	require.NoError(t, err)
 	specCheck(t, testID, testSandboxID, testPid, spec)
 }
@@ -134,7 +138,7 @@ func TestPodAnnotationPassthroughContainerSpec(t *testing.T) {
 			ociRuntime := config.Runtime{
 				PodAnnotations: test.podAnnotations,
 			}
-			spec, err := c.containerSpec(testID, testSandboxID, testPid, "", testContainerName, testImageName,
+			spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName,
 				containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
 			assert.NoError(t, err)
 			assert.NotNil(t, spec)
@@ -391,7 +395,7 @@ func TestContainerAnnotationPassthroughContainerSpec(t *testing.T) {
 				PodAnnotations:       test.podAnnotations,
 				ContainerAnnotations: test.containerAnnotations,
 			}
-			spec, err := c.containerSpec(testID, testSandboxID, testPid, "", testContainerName, testImageName,
+			spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName,
 				containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
 			assert.NoError(t, err)
 			assert.NotNil(t, spec)
@@ -412,11 +416,18 @@ func TestBaseRuntimeSpec(t *testing.T) {
 		},
 	}
 
-	out, err := c.runtimeSpec("id1", "/etc/containerd/cri-base.json", oci.WithHostname("new"))
+	out, err := c.runtimeSpec(
+		"id1",
+		platforms.DefaultSpec(),
+		"/etc/containerd/cri-base.json",
+		oci.WithHostname("new-host"),
+		oci.WithDomainname("new-domain"),
+	)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "1.0.2", out.Version)
-	assert.Equal(t, "new", out.Hostname)
+	assert.Equal(t, "new-host", out.Hostname)
+	assert.Equal(t, "new-domain", out.Domainname)
 
 	// Make sure original base spec not changed
 	assert.NotEqual(t, out, c.baseOCISpecs["/etc/containerd/cri-base.json"])

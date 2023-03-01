@@ -18,6 +18,7 @@ package sbserver
 
 import (
 	"github.com/docker/go-metrics"
+	prom "github.com/prometheus/client_golang/prometheus"
 )
 
 var (
@@ -34,6 +35,15 @@ var (
 	containerCreateTimer metrics.LabeledTimer
 	containerStopTimer   metrics.LabeledTimer
 	containerStartTimer  metrics.LabeledTimer
+
+	networkPluginOperations        metrics.LabeledCounter
+	networkPluginOperationsErrors  metrics.LabeledCounter
+	networkPluginOperationsLatency metrics.LabeledTimer
+
+	imagePulls           metrics.LabeledCounter
+	inProgressImagePulls metrics.Gauge
+	//  pull duration / (image size / 1MBi)
+	imagePullThroughput prom.Histogram
 )
 
 func init() {
@@ -54,5 +64,27 @@ func init() {
 	containerStopTimer = ns.NewLabeledTimer("container_stop", "time to stop a container", "runtime")
 	containerStartTimer = ns.NewLabeledTimer("container_start", "time to start a container", "runtime")
 
+	networkPluginOperations = ns.NewLabeledCounter("network_plugin_operations_total", "cumulative number of network plugin operations by operation type", "operation_type")
+	networkPluginOperationsErrors = ns.NewLabeledCounter("network_plugin_operations_errors_total", "cumulative number of network plugin operations by operation type", "operation_type")
+	networkPluginOperationsLatency = ns.NewLabeledTimer("network_plugin_operations_duration_seconds", "latency in seconds of network plugin operations. Broken down by operation type", "operation_type")
+
+	imagePulls = ns.NewLabeledCounter("image_pulls", "succeeded and failed counters", "status")
+	inProgressImagePulls = ns.NewGauge("in_progress_image_pulls", "in progress pulls", metrics.Total)
+	imagePullThroughput = prom.NewHistogram(
+		prom.HistogramOpts{
+			Name:    "image_pulling_throughput",
+			Help:    "image pull throughput",
+			Buckets: prom.DefBuckets,
+		},
+	)
+
 	metrics.Register(ns)
 }
+
+// for backwards compatibility with kubelet/dockershim metrics
+// https://github.com/containerd/containerd/issues/7801
+const (
+	networkStatusOp   = "get_pod_network_status"
+	networkSetUpOp    = "set_up_pod"
+	networkTearDownOp = "tear_down_pod"
+)

@@ -1,5 +1,4 @@
 //go:build !windows && !darwin
-// +build !windows,!darwin
 
 /*
    Copyright The containerd Authors.
@@ -36,6 +35,8 @@ import (
 	"github.com/containerd/containerd/pkg/testutil"
 	"github.com/containerd/continuity/fs"
 	"github.com/containerd/continuity/fs/fstest"
+	"github.com/opencontainers/go-digest"
+	"github.com/stretchr/testify/require"
 	exec "golang.org/x/sys/execabs"
 )
 
@@ -1156,7 +1157,53 @@ func TestDiffTar(t *testing.T) {
 	}
 }
 
+func TestSourceDateEpoch(t *testing.T) {
+	sourceDateEpoch, err := time.Parse(time.RFC3339, "2022-01-23T12:34:56Z")
+	require.NoError(t, err)
+	past, err := time.Parse(time.RFC3339, "2022-01-01T00:00:00Z")
+	require.NoError(t, err)
+	require.True(t, past.Before(sourceDateEpoch))
+	veryRecent := time.Now()
+	require.True(t, veryRecent.After(sourceDateEpoch))
+
+	opts := []WriteDiffOpt{WithSourceDateEpoch(&sourceDateEpoch)}
+	validators := []tarEntryValidator{
+		composeValidators(whiteoutEntry("f1"), requireModTime(sourceDateEpoch)),
+		composeValidators(fileEntry("f2", []byte("content2"), 0644), requireModTime(past)),
+		composeValidators(fileEntry("f3", []byte("content3"), 0644), requireModTime(sourceDateEpoch)),
+	}
+	a := fstest.Apply(
+		fstest.CreateFile("/f1", []byte("content"), 0644),
+	)
+	b := fstest.Apply(
+		// Remove f1; the timestamp of the tar entry will be sourceDateEpoch
+		fstest.RemoveAll("/f1"),
+		// Create f2 with the past timestamp; the timestamp of the tar entry will be past (< sourceDateEpoch)
+		fstest.CreateFile("/f2", []byte("content2"), 0644),
+		fstest.Chtimes("/f2", past, past),
+		// Create f3 with the veryRecent timestamp; the timestamp of the tar entry will be sourceDateEpoch
+		fstest.CreateFile("/f3", []byte("content3"), 0644),
+		fstest.Chtimes("/f3", veryRecent, veryRecent),
+	)
+	makeDiffTarTest(validators, a, b, opts...)(t)
+	if testing.Short() {
+		t.Skip("short: skipping repro test")
+	}
+	makeDiffTarReproTest(a, b, opts...)(t)
+}
+
 type tarEntryValidator func(*tar.Header, []byte) error
+
+func composeValidators(vv ...tarEntryValidator) tarEntryValidator {
+	return func(hdr *tar.Header, b []byte) error {
+		for _, v := range vv {
+			if err := v(hdr, b); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
 
 func dirEntry(name string, mode int) tarEntryValidator {
 	return func(hdr *tar.Header, b []byte) error {
@@ -1222,7 +1269,16 @@ func whiteoutEntry(name string) tarEntryValidator {
 	}
 }
 
-func makeDiffTarTest(validators []tarEntryValidator, a, b fstest.Applier) func(*testing.T) {
+func requireModTime(expected time.Time) tarEntryValidator {
+	return func(hdr *tar.Header, b []byte) error {
+		if !hdr.ModTime.Equal(expected) {
+			return fmt.Errorf("expected ModTime %v, got %v", expected, hdr.ModTime)
+		}
+		return nil
+	}
+}
+
+func makeDiffTarTest(validators []tarEntryValidator, a, b fstest.Applier, opts ...WriteDiffOpt) func(*testing.T) {
 	return func(t *testing.T) {
 		ad := t.TempDir()
 		if err := a.Apply(ad); err != nil {
@@ -1237,7 +1293,7 @@ func makeDiffTarTest(validators []tarEntryValidator, a, b fstest.Applier) func(*
 			t.Fatalf("failed to apply b: %v", err)
 		}
 
-		rc := Diff(context.Background(), ad, bd)
+		rc := Diff(context.Background(), ad, bd, opts...)
 		defer rc.Close()
 
 		tr := tar.NewReader(rc)
@@ -1262,6 +1318,54 @@ func makeDiffTarTest(validators []tarEntryValidator, a, b fstest.Applier) func(*
 			if err := validators[i](hdr, b); err != nil {
 				t.Fatalf("tar entry[%d] validation fail: %#v", i, err)
 			}
+		}
+	}
+}
+
+func makeDiffTar(t *testing.T, a, b fstest.Applier, opts ...WriteDiffOpt) (digest.Digest, []byte) {
+	ad := t.TempDir()
+	if err := a.Apply(ad); err != nil {
+		t.Fatalf("failed to apply a: %v", err)
+	}
+
+	bd := t.TempDir()
+	if err := fs.CopyDir(bd, ad); err != nil {
+		t.Fatalf("failed to copy dir: %v", err)
+	}
+	if err := b.Apply(bd); err != nil {
+		t.Fatalf("failed to apply b: %v", err)
+	}
+
+	rc := Diff(context.Background(), ad, bd, opts...)
+	defer rc.Close()
+	var buf bytes.Buffer
+	r := io.TeeReader(rc, &buf)
+	dgst, err := digest.FromReader(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dgst, buf.Bytes()
+}
+
+func makeDiffTarReproTest(a, b fstest.Applier, opts ...WriteDiffOpt) func(*testing.T) {
+	return func(t *testing.T) {
+		const (
+			count = 30
+			delay = 100 * time.Millisecond
+		)
+		var lastDigest digest.Digest
+		for i := 0; i < count; i++ {
+			dgst, _ := makeDiffTar(t, a, b, opts...)
+			t.Logf("#%02d: %v: digest %s", i, time.Now(), dgst)
+			if lastDigest == "" {
+				lastDigest = dgst
+			} else if dgst != lastDigest {
+				t.Fatalf("expected digest %s, got %s", lastDigest, dgst)
+			}
+			time.Sleep(delay)
 		}
 	}
 }

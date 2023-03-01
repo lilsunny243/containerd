@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 /*
    Copyright The containerd Authors.
@@ -66,10 +65,11 @@ func DefaultConfig() PluginConfig {
 	tree, _ := toml.Load(defaultRuncV2Opts)
 	return PluginConfig{
 		CniConfig: CniConfig{
-			NetworkPluginBinDir:       "/opt/cni/bin",
-			NetworkPluginConfDir:      "/etc/cni/net.d",
-			NetworkPluginMaxConfNum:   1, // only one CNI plugin config file will be loaded
-			NetworkPluginConfTemplate: "",
+			NetworkPluginBinDir:        "/opt/cni/bin",
+			NetworkPluginConfDir:       "/etc/cni/net.d",
+			NetworkPluginMaxConfNum:    1, // only one CNI plugin config file will be loaded
+			NetworkPluginSetupSerially: false,
+			NetworkPluginConfTemplate:  "",
 		},
 		ContainerdConfig: ContainerdConfig{
 			Snapshotter:        containerd.DefaultSnapshotter,
@@ -77,8 +77,9 @@ func DefaultConfig() PluginConfig {
 			NoPivot:            false,
 			Runtimes: map[string]Runtime{
 				"runc": {
-					Type:    "io.containerd.runc.v2",
-					Options: tree.ToMap(),
+					Type:        "io.containerd.runc.v2",
+					Options:     tree.ToMap(),
+					SandboxMode: string(ModePodSandbox),
 				},
 			},
 			DisableSnapshotAnnotations: true,
@@ -94,7 +95,7 @@ func DefaultConfig() PluginConfig {
 			TLSKeyFile:  "",
 			TLSCertFile: "",
 		},
-		SandboxImage:                     "registry.k8s.io/pause:3.7",
+		SandboxImage:                     "registry.k8s.io/pause:3.8",
 		StatsCollectPeriod:               10,
 		SystemdCgroup:                    false,
 		MaxContainerLogLineSize:          16 * 1024,

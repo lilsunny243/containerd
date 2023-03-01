@@ -27,7 +27,7 @@ import (
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/services"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"google.golang.org/grpc"
@@ -145,6 +145,10 @@ func (l *local) Diff(ctx context.Context, dr *diffapi.DiffRequest, _ ...grpc.Cal
 	if dr.Labels != nil {
 		opts = append(opts, diff.WithLabels(dr.Labels))
 	}
+	if dr.SourceDateEpoch != nil {
+		tm := dr.SourceDateEpoch.AsTime()
+		opts = append(opts, diff.WithSourceDateEpoch(&tm))
+	}
 
 	for _, d := range l.differs {
 		ocidesc, err = d.Compare(ctx, aMounts, bMounts, opts...)
@@ -167,6 +171,7 @@ func toMounts(apim []*types.Mount) []mount.Mount {
 		mounts[i] = mount.Mount{
 			Type:    m.Type,
 			Source:  m.Source,
+			Target:  m.Target,
 			Options: m.Options,
 		}
 	}

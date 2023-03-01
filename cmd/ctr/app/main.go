@@ -24,6 +24,7 @@ import (
 	"github.com/containerd/containerd/cmd/ctr/commands/content"
 	"github.com/containerd/containerd/cmd/ctr/commands/events"
 	"github.com/containerd/containerd/cmd/ctr/commands/images"
+	"github.com/containerd/containerd/cmd/ctr/commands/info"
 	"github.com/containerd/containerd/cmd/ctr/commands/install"
 	"github.com/containerd/containerd/cmd/ctr/commands/leases"
 	namespacesCmd "github.com/containerd/containerd/cmd/ctr/commands/namespaces"
@@ -77,7 +78,7 @@ containerd CLI
 	app.Flags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "debug",
-			Usage: "enable debug output in logs",
+			Usage: "Enable debug output in logs",
 		},
 		cli.StringFlag{
 			Name:   "address, a",
@@ -87,11 +88,11 @@ containerd CLI
 		},
 		cli.DurationFlag{
 			Name:  "timeout",
-			Usage: "total timeout for ctr commands",
+			Usage: "Total timeout for ctr commands",
 		},
 		cli.DurationFlag{
 			Name:  "connect-timeout",
-			Usage: "timeout for connecting to containerd",
+			Usage: "Timeout for connecting to containerd",
 		},
 		cli.StringFlag{
 			Name:   "namespace, n",
@@ -116,6 +117,7 @@ containerd CLI
 		install.Command,
 		ociCmd.Command,
 		sandboxes.Command,
+		info.Command,
 	}, extraCmds...)
 	app.Before = func(context *cli.Context) error {
 		if context.GlobalBool("debug") {

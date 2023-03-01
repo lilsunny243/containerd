@@ -1,5 +1,4 @@
 //go:build !darwin && !freebsd
-// +build !darwin,!freebsd
 
 /*
    Copyright The containerd Authors.
@@ -24,13 +23,14 @@ import (
 	gocontext "context"
 	"fmt"
 
+	"github.com/containerd/typeurl/v2"
+	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
+	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
+
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
-	"github.com/containerd/typeurl"
-	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
 	ctrdutil "github.com/containerd/containerd/pkg/cri/util"
@@ -42,25 +42,48 @@ func (c *criService) UpdateContainerResources(ctx context.Context, r *runtime.Up
 	if err != nil {
 		return nil, fmt.Errorf("failed to find container: %w", err)
 	}
+
+	sandbox, err := c.sandboxStore.Get(container.SandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	resources := r.GetLinux()
+	updated, err := c.nri.UpdateContainerResources(ctx, &sandbox, &container, resources)
+	if err != nil {
+		return nil, fmt.Errorf("NRI container update failed: %w", err)
+	}
+	if updated != nil {
+		*resources = *updated
+	}
+
 	// Update resources in status update transaction, so that:
 	// 1) There won't be race condition with container start.
 	// 2) There won't be concurrent resource update to the same container.
-	if err := container.Status.Update(func(status containerstore.Status) (containerstore.Status, error) {
-		return status, c.updateContainerResources(ctx, container, r, status)
+	if err := container.Status.UpdateSync(func(status containerstore.Status) (containerstore.Status, error) {
+		return c.updateContainerResources(ctx, container, r, status)
 	}); err != nil {
 		return nil, fmt.Errorf("failed to update resources: %w", err)
 	}
+
+	err = c.nri.PostUpdateContainerResources(ctx, &sandbox, &container)
+	if err != nil {
+		log.G(ctx).WithError(err).Errorf("NRI post-update notification failed")
+	}
+
 	return &runtime.UpdateContainerResourcesResponse{}, nil
 }
 
 func (c *criService) updateContainerResources(ctx context.Context,
 	cntr containerstore.Container,
 	r *runtime.UpdateContainerResourcesRequest,
-	status containerstore.Status) (retErr error) {
+	status containerstore.Status) (newStatus containerstore.Status, retErr error) {
+
+	newStatus = status
 	id := cntr.ID
 	// Do not update the container when there is a removal in progress.
 	if status.Removing {
-		return fmt.Errorf("container %q is in removing state", id)
+		return newStatus, fmt.Errorf("container %q is in removing state", id)
 	}
 
 	// Update container spec. If the container is not started yet, updating
@@ -69,15 +92,15 @@ func (c *criService) updateContainerResources(ctx context.Context,
 	// the spec will become our source of truth for resource limits.
 	oldSpec, err := cntr.Container.Spec(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get container spec: %w", err)
+		return newStatus, fmt.Errorf("failed to get container spec: %w", err)
 	}
 	newSpec, err := updateOCIResource(ctx, oldSpec, r, c.config)
 	if err != nil {
-		return fmt.Errorf("failed to update resource in spec: %w", err)
+		return newStatus, fmt.Errorf("failed to update resource in spec: %w", err)
 	}
 
 	if err := updateContainerSpec(ctx, cntr.Container, newSpec); err != nil {
-		return err
+		return newStatus, err
 	}
 	defer func() {
 		if retErr != nil {
@@ -87,32 +110,35 @@ func (c *criService) updateContainerResources(ctx context.Context,
 			if err := updateContainerSpec(deferCtx, cntr.Container, oldSpec); err != nil {
 				log.G(ctx).WithError(err).Errorf("Failed to update spec %+v for container %q", oldSpec, id)
 			}
+		} else {
+			// Update container status only when the spec is updated
+			newStatus = copyResourcesToStatus(newSpec, status)
 		}
 	}()
 
 	// If container is not running, only update spec is enough, new resource
 	// limit will be applied when container start.
 	if status.State() != runtime.ContainerState_CONTAINER_RUNNING {
-		return nil
+		return newStatus, nil
 	}
 
 	task, err := cntr.Container.Task(ctx, nil)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			// Task exited already.
-			return nil
+			return newStatus, nil
 		}
-		return fmt.Errorf("failed to get task: %w", err)
+		return newStatus, fmt.Errorf("failed to get task: %w", err)
 	}
 	// newSpec.Linux / newSpec.Windows won't be nil
 	if err := task.Update(ctx, containerd.WithResources(getResources(newSpec))); err != nil {
 		if errdefs.IsNotFound(err) {
 			// Task exited already.
-			return nil
+			return newStatus, nil
 		}
-		return fmt.Errorf("failed to update resources: %w", err)
+		return newStatus, fmt.Errorf("failed to update resources: %w", err)
 	}
-	return nil
+	return newStatus, nil
 }
 
 // updateContainerSpec updates container spec.

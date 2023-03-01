@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 /*
    Copyright The containerd Authors.
@@ -25,7 +24,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/containerd/cgroups"
+	cgroups "github.com/containerd/cgroups/v3/cgroup1"
 	eventstypes "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/events/exchange"
@@ -58,7 +57,7 @@ func newTask(id, namespace string, pid int, shim *client.Client, events *exchang
 		cg  cgroups.Cgroup
 	)
 	if pid > 0 {
-		cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
+		cg, err = cgroups.Load(cgroups.PidPath(pid))
 		if err != nil && err != cgroups.ErrCgroupDeleted {
 			return nil, err
 		}
@@ -135,7 +134,7 @@ func (t *Task) Start(ctx context.Context) error {
 	}
 	t.pid = int(r.Pid)
 	if !hasCgroup {
-		cg, err := cgroups.Load(cgroups.V1, cgroups.PidPath(t.pid))
+		cg, err := cgroups.Load(cgroups.PidPath(t.pid))
 		if err != nil && err != cgroups.ErrCgroupDeleted {
 			return err
 		}

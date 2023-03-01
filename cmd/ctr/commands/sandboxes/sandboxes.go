@@ -50,7 +50,7 @@ var runCommand = cli.Command{
 	Flags: []cli.Flag{
 		cli.StringFlag{
 			Name:  "runtime",
-			Usage: "runtime name",
+			Usage: "Runtime name",
 			Value: defaults.DefaultRuntime,
 		},
 	},
@@ -65,12 +65,12 @@ var runCommand = cli.Command{
 
 		spec, err := os.ReadFile(context.Args().First())
 		if err != nil {
-			return fmt.Errorf("Failed to read sandbox config: %w", err)
+			return fmt.Errorf("failed to read sandbox config: %w", err)
 		}
 
 		ociSpec := oci.Spec{}
 		if err = json.Unmarshal(spec, &ociSpec); err != nil {
-			return fmt.Errorf("Failed to parse sandbox config: %w", err)
+			return fmt.Errorf("failed to parse sandbox config: %w", err)
 		}
 
 		client, ctx, cancel, err := commands.NewClient(context)
@@ -104,7 +104,7 @@ var listCommand = cli.Command{
 	Flags: []cli.Flag{
 		cli.StringSliceFlag{
 			Name:  "filters",
-			Usage: "the list of filters to apply when querying sandboxes from the store",
+			Usage: "The list of filters to apply when querying sandboxes from the store",
 		},
 	},
 	Action: func(context *cli.Context) error {
@@ -151,7 +151,7 @@ var removeCommand = cli.Command{
 	Flags: []cli.Flag{
 		cli.BoolFlag{
 			Name:  "force, f",
-			Usage: "ignore shutdown errors when removing sandbox",
+			Usage: "Ignore shutdown errors when removing sandbox",
 		},
 	},
 	Action: func(context *cli.Context) error {
@@ -178,7 +178,7 @@ var removeCommand = cli.Command{
 				}
 			}
 
-			err = sandbox.Delete(ctx)
+			err = sandbox.Shutdown(ctx)
 			if err != nil {
 				log.G(ctx).WithError(err).Errorf("failed to shutdown sandbox %s", id)
 				continue

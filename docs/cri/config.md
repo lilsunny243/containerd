@@ -223,6 +223,8 @@ version = 2
   enable_cdi = false
 
   # cdi_spec_dirs is the list of directories to scan for CDI spec files
+  # For more details about CDI configuration please refer to
+  # https://github.com/container-orchestrated-devices/container-device-interface#containerd-configuration
   cdi_spec_dirs = ["/etc/cdi", "/var/run/cdi"]
 
   # 'plugins."io.containerd.grpc.v1.cri".containerd' contains config related to containerd
@@ -490,7 +492,7 @@ to request a pod be run using a runtime for untrusted workloads, the RuntimeHand
 `plugins."io.containerd.grpc.v1.cri"cri.containerd.runtimes.untrusted` must be defined first.
 When the annotation `io.kubernetes.cri.untrusted-workload` is set to `true` the `untrusted`
 runtime will be used. For example, see
-[Create an untrusted pod using Kata Containers](https://github.com/kata-containers/documentation/blob/master/how-to/how-to-use-k8s-with-cri-containerd-and-kata.md#create-an-untrusted-pod-using-kata-containers).
+[Create an untrusted pod using Kata Containers](https://github.com/kata-containers/kata-containers/blob/main/docs/how-to/containerd-kata.md#kata-containers-as-the-runtime-for-untrusted-workload).
 
 ## CNI Config Template
 

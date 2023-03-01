@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 
@@ -81,24 +80,19 @@ func (c *criService) RemovePodSandbox(ctx context.Context, r *runtime.RemovePodS
 		}
 	}
 
-	// Cleanup the sandbox root directories.
-	sandboxRootDir := c.getSandboxRootDir(id)
-	if err := ensureRemoveAll(ctx, sandboxRootDir); err != nil {
-		return nil, fmt.Errorf("failed to remove sandbox root directory %q: %w",
-			sandboxRootDir, err)
-	}
-	volatileSandboxRootDir := c.getVolatileSandboxRootDir(id)
-	if err := ensureRemoveAll(ctx, volatileSandboxRootDir); err != nil {
-		return nil, fmt.Errorf("failed to remove volatile sandbox root directory %q: %w",
-			volatileSandboxRootDir, err)
+	// Use sandbox controller to delete sandbox
+	controller, err := c.getSandboxController(sandbox.Config, sandbox.RuntimeHandler)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sandbox controller: %w", err)
 	}
 
-	// Delete sandbox container.
-	if err := sandbox.Container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to delete sandbox container %q: %w", id, err)
-		}
-		log.G(ctx).Tracef("Remove called for sandbox container %q that does not exist", id)
+	if err := controller.Shutdown(ctx, id); err != nil && !errdefs.IsNotFound(err) {
+		return nil, fmt.Errorf("failed to delete sandbox %q: %w", id, err)
+	}
+
+	err = c.nri.RemovePodSandbox(ctx, &sandbox)
+	if err != nil {
+		log.G(ctx).WithError(err).Errorf("NRI pod removal notification failed")
 	}
 
 	// Remove sandbox from sandbox store. Note that once the sandbox is successfully

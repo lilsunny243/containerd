@@ -26,10 +26,11 @@ import (
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
 	"github.com/containerd/containerd/protobuf"
 	"github.com/containerd/containerd/snapshots"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/image-spec/identity"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -223,6 +224,11 @@ func WithNewSnapshot(id string, i Image, opts ...snapshots.Opt) NewContainerOpts
 		if err != nil {
 			return err
 		}
+
+		parent, err = resolveSnapshotOptions(ctx, client, c.Snapshotter, s, parent, opts...)
+		if err != nil {
+			return err
+		}
 		if _, err := s.Prepare(ctx, id, parent, opts...); err != nil {
 			return err
 		}
@@ -267,6 +273,11 @@ func WithNewSnapshotView(id string, i Image, opts ...snapshots.Opt) NewContainer
 		if err != nil {
 			return err
 		}
+
+		parent, err = resolveSnapshotOptions(ctx, client, c.Snapshotter, s, parent, opts...)
+		if err != nil {
+			return err
+		}
 		if _, err := s.View(ctx, id, parent, opts...); err != nil {
 			return err
 		}
@@ -307,6 +318,9 @@ func WithContainerExtension(name string, extension interface{}) NewContainerOpts
 // WithNewSpec generates a new spec for a new container
 func WithNewSpec(opts ...oci.SpecOpts) NewContainerOpts {
 	return func(ctx context.Context, client *Client, c *containers.Container) error {
+		if _, ok := namespaces.Namespace(ctx); !ok {
+			ctx = namespaces.WithNamespace(ctx, client.DefaultNamespace())
+		}
 		s, err := oci.GenerateSpec(ctx, client, c, opts...)
 		if err != nil {
 			return err

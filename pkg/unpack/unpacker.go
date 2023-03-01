@@ -18,11 +18,12 @@ package unpack
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,21 +32,24 @@ import (
 	"github.com/containerd/containerd/diff"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/labels"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/pkg/cleanup"
 	"github.com/containerd/containerd/pkg/kmutex"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/snapshots"
+	"github.com/containerd/containerd/tracing"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 )
 
 const (
 	labelSnapshotRef = "containerd.io/snapshot.ref"
+	unpackSpanPrefix = "pkg.unpack.unpacker"
 )
 
 // Result returns information about the unpacks which were completed.
@@ -160,6 +164,11 @@ func (u *Unpacker) Unpack(h images.Handler) images.Handler {
 		layers = map[digest.Digest][]ocispec.Descriptor{}
 	)
 	return images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+		ctx, span := tracing.StartSpan(ctx, tracing.Name(unpackSpanPrefix, "UnpackHandler"))
+		defer span.End()
+		span.SetAttributes(
+			tracing.Attribute("descriptor.media.type", desc.MediaType),
+			tracing.Attribute("descriptor.digest", desc.Digest.String()))
 		unlock, err := u.lockBlobDescriptor(ctx, desc)
 		if err != nil {
 			return nil, err
@@ -174,10 +183,12 @@ func (u *Unpacker) Unpack(h images.Handler) images.Handler {
 		case images.MediaTypeDockerSchema2Manifest, ocispec.MediaTypeImageManifest:
 			var nonLayers []ocispec.Descriptor
 			var manifestLayers []ocispec.Descriptor
-
 			// Split layers from non-layers, layers will be handled after
 			// the config
-			for _, child := range children {
+			for i, child := range children {
+				span.SetAttributes(
+					tracing.Attribute("descriptor.child."+strconv.Itoa(i), []string{child.MediaType, child.Digest.String()}),
+				)
 				if images.IsLayerType(child.MediaType) {
 					manifestLayers = append(manifestLayers, child)
 				} else {
@@ -223,6 +234,8 @@ func (u *Unpacker) unpack(
 	layers []ocispec.Descriptor,
 ) error {
 	ctx := u.ctx
+	ctx, layerSpan := tracing.StartSpan(ctx, tracing.Name(unpackSpanPrefix, "unpack"))
+	defer layerSpan.End()
 	p, err := content.ReadBlob(ctx, u.content, config)
 	if err != nil {
 		return err
@@ -290,16 +303,16 @@ func (u *Unpacker) unpack(
 		}
 
 		// inherits annotations which are provided as snapshot labels.
-		labels := snapshots.FilterInheritedLabels(desc.Annotations)
-		if labels == nil {
-			labels = make(map[string]string)
+		snapshotLabels := snapshots.FilterInheritedLabels(desc.Annotations)
+		if snapshotLabels == nil {
+			snapshotLabels = make(map[string]string)
 		}
-		labels[labelSnapshotRef] = chainID
+		snapshotLabels[labelSnapshotRef] = chainID
 
 		var (
 			key    string
 			mounts []mount.Mount
-			opts   = append(unpack.SnapshotOpts, snapshots.WithLabels(labels))
+			opts   = append(unpack.SnapshotOpts, snapshots.WithLabels(snapshotLabels))
 		)
 
 		for try := 1; try <= 3; try++ {
@@ -330,7 +343,7 @@ func (u *Unpacker) unpack(
 		}
 
 		// Abort the snapshot if commit does not happen
-		abort := func() {
+		abort := func(ctx context.Context) {
 			if err := sn.Remove(ctx, key); err != nil {
 				log.G(ctx).WithError(err).Errorf("failed to cleanup %q", key)
 			}
@@ -355,11 +368,11 @@ func (u *Unpacker) unpack(
 
 		select {
 		case <-ctx.Done():
-			abort()
+			cleanup.Do(ctx, abort)
 			return ctx.Err()
 		case err := <-fetchErr:
 			if err != nil {
-				abort()
+				cleanup.Do(ctx, abort)
 				return err
 			}
 		case <-fetchC[i-fetchOffset]:
@@ -367,16 +380,16 @@ func (u *Unpacker) unpack(
 
 		diff, err := a.Apply(ctx, desc, mounts, unpack.ApplyOpts...)
 		if err != nil {
-			abort()
+			cleanup.Do(ctx, abort)
 			return fmt.Errorf("failed to extract layer %s: %w", diffIDs[i], err)
 		}
 		if diff.Digest != diffIDs[i] {
-			abort()
+			cleanup.Do(ctx, abort)
 			return fmt.Errorf("wrong diff id calculated on extraction %q", diffIDs[i])
 		}
 
 		if err = sn.Commit(ctx, chainID, key, opts...); err != nil {
-			abort()
+			cleanup.Do(ctx, abort)
 			if errdefs.IsAlreadyExists(err) {
 				return nil
 			}
@@ -388,19 +401,28 @@ func (u *Unpacker) unpack(
 		cinfo := content.Info{
 			Digest: desc.Digest,
 			Labels: map[string]string{
-				"containerd.io/uncompressed": diff.Digest.String(),
+				labels.LabelUncompressed: diff.Digest.String(),
 			},
 		}
-		if _, err := cs.Update(ctx, cinfo, "labels.containerd.io/uncompressed"); err != nil {
+		if _, err := cs.Update(ctx, cinfo, "labels."+labels.LabelUncompressed); err != nil {
 			return err
 		}
 		return nil
 	}
 
 	for i, desc := range layers {
+		_, layerSpan := tracing.StartSpan(ctx, tracing.Name(unpackSpanPrefix, "unpackLayer"))
+		layerSpan.SetAttributes(
+			tracing.Attribute("layer.media.type", desc.MediaType),
+			tracing.Attribute("layer.media.size", desc.Size),
+			tracing.Attribute("layer.media.digest", desc.Digest.String()),
+		)
 		if err := doUnpackFn(i, desc); err != nil {
+			layerSpan.SetStatus(err)
+			layerSpan.End()
 			return err
 		}
+		layerSpan.End()
 	}
 
 	chainID := identity.ChainID(chain).String()
@@ -414,7 +436,7 @@ func (u *Unpacker) unpack(
 	if err != nil {
 		return err
 	}
-	log.G(ctx).WithFields(logrus.Fields{
+	log.G(ctx).WithFields(log.Fields{
 		"config":  config.Digest,
 		"chainID": chainID,
 	}).Debug("image unpacked")
@@ -425,9 +447,14 @@ func (u *Unpacker) unpack(
 func (u *Unpacker) fetch(ctx context.Context, h images.Handler, layers []ocispec.Descriptor, done []chan struct{}) error {
 	eg, ctx2 := errgroup.WithContext(ctx)
 	for i, desc := range layers {
+		ctx2, layerSpan := tracing.StartSpan(ctx2, tracing.Name(unpackSpanPrefix, "fetchLayer"))
+		layerSpan.SetAttributes(
+			tracing.Attribute("layer.media.type", desc.MediaType),
+			tracing.Attribute("layer.media.size", desc.Size),
+			tracing.Attribute("layer.media.digest", desc.Digest.String()),
+		)
 		desc := desc
 		i := i
-
 		if err := u.acquire(ctx); err != nil {
 			return err
 		}
@@ -451,6 +478,7 @@ func (u *Unpacker) fetch(ctx context.Context, h images.Handler, layers []ocispec
 
 			return nil
 		})
+		layerSpan.End()
 	}
 
 	return eg.Wait()

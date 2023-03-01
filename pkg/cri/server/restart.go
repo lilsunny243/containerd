@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"sync"
 	"time"
 
@@ -31,7 +30,7 @@ import (
 	containerdimages "github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/platforms"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	"golang.org/x/sync/errgroup"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
@@ -426,15 +425,11 @@ func (c *criService) loadSandbox(ctx context.Context, cntr containerd.Container)
 	sandbox = sandboxstore.NewSandbox(*meta, s)
 	sandbox.Container = cntr
 
+	// Don't need to load netns for host network sandbox.
+	if hostNetwork(meta.Config) {
+		return sandbox, nil
+	}
 	// Load network namespace.
-	if goruntime.GOOS != "windows" &&
-		meta.Config.GetLinux().GetSecurityContext().GetNamespaceOptions().GetNetwork() == runtime.NamespaceMode_NODE {
-		// Don't need to load netns for host network sandbox.
-		return sandbox, nil
-	}
-	if goruntime.GOOS == "windows" && meta.Config.GetWindows().GetSecurityContext().GetHostProcess() {
-		return sandbox, nil
-	}
 	sandbox.NetNS = netns.LoadNetNS(meta.NetNSPath)
 
 	// It doesn't matter whether task is running or not. If it is running, sandbox

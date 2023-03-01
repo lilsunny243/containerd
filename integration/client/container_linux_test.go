@@ -30,8 +30,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containerd/cgroups"
-	cgroupsv2 "github.com/containerd/cgroups/v2"
+	"github.com/containerd/cgroups/v3"
+	"github.com/containerd/cgroups/v3/cgroup1"
+	cgroupsv2 "github.com/containerd/cgroups/v3/cgroup2"
 	. "github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/containers"
@@ -93,7 +94,7 @@ func TestTaskUpdate(t *testing.T) {
 	}
 
 	var (
-		cgroup  cgroups.Cgroup
+		cgroup  cgroup1.Cgroup
 		cgroup2 *cgroupsv2.Manager
 	)
 	// check that the task has a limit of 32mb
@@ -102,7 +103,7 @@ func TestTaskUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cgroup2, err = cgroupsv2.LoadManager("/sys/fs/cgroup", groupPath)
+		cgroup2, err = cgroupsv2.Load(groupPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,11 +115,11 @@ func TestTaskUpdate(t *testing.T) {
 			t.Fatalf("expected memory limit to be set to %d but received %d", limit, stat.Memory.UsageLimit)
 		}
 	} else {
-		cgroup, err = cgroups.Load(cgroups.V1, cgroups.PidPath(int(task.Pid())))
+		cgroup, err = cgroup1.Load(cgroup1.PidPath(int(task.Pid())))
 		if err != nil {
 			t.Fatal(err)
 		}
-		stat, err := cgroup.Stat(cgroups.IgnoreNotExist)
+		stat, err := cgroup.Stat(cgroup1.IgnoreNotExist)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +145,7 @@ func TestTaskUpdate(t *testing.T) {
 			t.Errorf("expected memory limit to be set to %d but received %d", limit, stat.Memory.UsageLimit)
 		}
 	} else {
-		stat, err := cgroup.Stat(cgroups.IgnoreNotExist)
+		stat, err := cgroup.Stat(cgroup1.IgnoreNotExist)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,6 +161,10 @@ func TestTaskUpdate(t *testing.T) {
 }
 
 func TestShimInCgroup(t *testing.T) {
+	if noShimCgroup {
+		t.Skip("shim cgroup is not enabled")
+	}
+
 	t.Parallel()
 
 	client, err := newClient(t, address)
@@ -185,7 +190,7 @@ func TestShimInCgroup(t *testing.T) {
 	// create a cgroup for the shim to use
 	path := "/containerd/shim"
 	var (
-		cg  cgroups.Cgroup
+		cg  cgroup1.Cgroup
 		cg2 *cgroupsv2.Manager
 	)
 	if cgroups.Mode() == cgroups.Unified {
@@ -195,7 +200,7 @@ func TestShimInCgroup(t *testing.T) {
 		}
 		defer cg2.Delete()
 	} else {
-		cg, err = cgroups.New(cgroups.V1, cgroups.StaticPath(path), &specs.LinuxResources{})
+		cg, err = cgroup1.New(cgroup1.StaticPath(path), &specs.LinuxResources{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,7 +228,7 @@ func TestShimInCgroup(t *testing.T) {
 			t.Errorf("created cgroup should have at least one process inside: %d", len(processes))
 		}
 	} else {
-		processes, err := cg.Processes(cgroups.Devices, false)
+		processes, err := cg.Processes(cgroup1.Devices, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1002,7 +1007,7 @@ func TestDaemonRestartWithRunningShim(t *testing.T) {
 		t.Errorf(`first task.Wait() should have failed with "transport is closing"`)
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	c, err := ctrd.waitForStart(waitCtx)
 	cancel()
 	if err != nil {
@@ -1408,7 +1413,7 @@ func TestShimOOMScore(t *testing.T) {
 
 	path := "/containerd/oomshim"
 	var (
-		cg  cgroups.Cgroup
+		cg  cgroup1.Cgroup
 		cg2 *cgroupsv2.Manager
 	)
 	if cgroups.Mode() == cgroups.Unified {
@@ -1418,7 +1423,7 @@ func TestShimOOMScore(t *testing.T) {
 		}
 		defer cg2.Delete()
 	} else {
-		cg, err = cgroups.New(cgroups.V1, cgroups.StaticPath(path), &specs.LinuxResources{})
+		cg, err = cgroup1.New(cgroup1.StaticPath(path), &specs.LinuxResources{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1468,7 +1473,7 @@ func TestShimOOMScore(t *testing.T) {
 			}
 		}
 	} else {
-		processes, err := cg.Processes(cgroups.Devices, false)
+		processes, err := cg.Processes(cgroup1.Devices, false)
 		if err != nil {
 			t.Fatal(err)
 		}

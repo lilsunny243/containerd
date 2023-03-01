@@ -27,6 +27,16 @@ import (
 	"github.com/containerd/containerd/plugin"
 )
 
+type SandboxControllerMode string
+
+const (
+	// ModePodSandbox means use Controller implementation from sbserver podsandbox package.
+	// We take this one as a default mode.
+	ModePodSandbox SandboxControllerMode = "podsandbox"
+	// ModeShim means use whatever Controller implementation provided by shim.
+	ModeShim SandboxControllerMode = "shim"
+)
+
 // Runtime struct to contain the type(ID), engine, and root variables for a default runtime
 // and a runtime for untrusted workload.
 type Runtime struct {
@@ -76,6 +86,11 @@ type Runtime struct {
 	// while using default snapshotters for operational simplicity.
 	// See https://github.com/containerd/containerd/issues/6657 for details.
 	Snapshotter string `toml:"snapshotter" json:"snapshotter"`
+	// SandboxMode defines which sandbox runtime to use when scheduling pods
+	// This features requires experimental CRI server to be enabled (use ENABLE_CRI_SANDBOXES=1)
+	// shim - means use whatever Controller implementation provided by shim (e.g. use RemoteController).
+	// podsandbox - means use Controller implementation from sbserver podsandbox package.
+	SandboxMode string `toml:"sandbox_mode" json:"sandboxMode"`
 }
 
 // ContainerdConfig contains toml config related to containerd
@@ -128,6 +143,9 @@ type CniConfig struct {
 	// be loaded from the cni config directory by go-cni. Set the value to 0 to
 	// load all config files (no arbitrary limit). The legacy default value is 1.
 	NetworkPluginMaxConfNum int `toml:"max_conf_num" json:"maxConfNum"`
+	// NetworkPluginSetupSerially is a boolean flag to specify whether containerd sets up networks serially
+	// if there are multiple CNI plugin config files existing and NetworkPluginMaxConfNum is larger than 1.
+	NetworkPluginSetupSerially bool `toml:"setup_serially" json:"setupSerially"`
 	// NetworkPluginConfTemplate is the file path of golang template used to generate
 	// cni config.
 	// When it is set, containerd will get cidr(s) from kubelet to replace {{.PodCIDR}},
@@ -188,7 +206,7 @@ type Registry struct {
 	ConfigPath string `toml:"config_path" json:"configPath"`
 	// Mirrors are namespace to mirror mapping for all namespaces.
 	// This option will not be used when ConfigPath is provided.
-	// DEPRECATED: Use ConfigPath instead. Remove in containerd 1.7.
+	// DEPRECATED: Use ConfigPath instead. Remove in containerd 2.0.
 	Mirrors map[string]Mirror `toml:"mirrors" json:"mirrors"`
 	// Configs are configs for each registry.
 	// The key is the domain name or IP of the registry.
@@ -322,6 +340,8 @@ type PluginConfig struct {
 	// https://github.com/container-orchestrated-devices/container-device-interface.
 	EnableCDI bool `toml:"enable_cdi" json:"enableCDI"`
 	// CDISpecDirs is the list of directories to scan for Container Device Interface Specifications
+	// For more details about CDI configuration please refer to
+	// https://github.com/container-orchestrated-devices/container-device-interface#containerd-configuration
 	CDISpecDirs []string `toml:"cdi_spec_dirs" json:"cdiSpecDirs"`
 	// ImagePullProgressTimeout is the maximum duration that there is no
 	// image data read from image registry in the open connection. It will
@@ -410,7 +430,7 @@ func ValidatePluginConfig(ctx context.Context, c *PluginConfig) error {
 		// NoPivot can't be deprecated yet, because there is no alternative config option
 		// for `io.containerd.runtime.v1.linux`.
 	}
-	for _, r := range c.ContainerdConfig.Runtimes {
+	for k, r := range c.ContainerdConfig.Runtimes {
 		if r.Engine != "" {
 			if r.Type != plugin.RuntimeLinuxV1 {
 				return fmt.Errorf("`runtime_engine` only works for runtime %s", plugin.RuntimeLinuxV1)
@@ -425,6 +445,11 @@ func ValidatePluginConfig(ctx context.Context, c *PluginConfig) error {
 		}
 		if !r.PrivilegedWithoutHostDevices && r.PrivilegedWithoutHostDevicesAllDevicesAllowed {
 			return errors.New("`privileged_without_host_devices_all_devices_allowed` requires `privileged_without_host_devices` to be enabled")
+		}
+		// If empty, use default podSandbox mode
+		if len(r.SandboxMode) == 0 {
+			r.SandboxMode = string(ModePodSandbox)
+			c.ContainerdConfig.Runtimes[k] = r
 		}
 	}
 

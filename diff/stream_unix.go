@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 /*
    Copyright The containerd Authors.
@@ -30,7 +29,7 @@ import (
 
 	"github.com/containerd/containerd/protobuf"
 	"github.com/containerd/containerd/protobuf/proto"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	exec "golang.org/x/sys/execabs"
 )
 

@@ -25,13 +25,14 @@ import (
 	goruntime "runtime"
 	"strings"
 
+	"github.com/containerd/continuity/fs"
+
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/snapshots"
-	"github.com/containerd/continuity/fs"
 )
 
 // WithNewSnapshot wraps `containerd.WithNewSnapshot` so that if creating the
@@ -83,7 +84,7 @@ func WithVolumes(volumeMounts map[string]string) containerd.NewContainerOpts {
 		// if it fails but not RM snapshot data.
 		// refer to https://github.com/containerd/containerd/pull/1868
 		// https://github.com/containerd/containerd/pull/1785
-		defer os.Remove(root) // nolint: errcheck
+		defer os.Remove(root)
 
 		unmounter := func(mountPath string) {
 			if uerr := mount.Unmount(mountPath, 0); uerr != nil {

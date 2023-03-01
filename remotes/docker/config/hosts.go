@@ -99,6 +99,17 @@ func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHos
 			if host == "docker.io" {
 				hosts[len(hosts)-1].scheme = "https"
 				hosts[len(hosts)-1].host = "registry-1.docker.io"
+			} else if docker.IsLocalhost(host) {
+				hosts[len(hosts)-1].host = host
+				if options.DefaultScheme == "" || options.DefaultScheme == "http" {
+					hosts[len(hosts)-1].scheme = "http"
+
+					// Skipping TLS verification for localhost
+					var skipVerify = true
+					hosts[len(hosts)-1].skipVerify = &skipVerify
+				} else {
+					hosts[len(hosts)-1].scheme = options.DefaultScheme
+				}
 			} else {
 				hosts[len(hosts)-1].host = host
 				if options.DefaultScheme != "" {
@@ -321,6 +332,7 @@ func parseHostsFile(baseDir string, b []byte) ([]hostConfig, error) {
 
 	// HACK: we want to keep toml parsing structures private in this package, however go-toml ignores private embedded types.
 	// so we remap it to a public type within the func body, so technically it's public, but not possible to import elsewhere.
+	//nolint:unused
 	type HostFileConfig = hostFileConfig
 
 	c := struct {

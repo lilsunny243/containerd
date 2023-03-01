@@ -1,5 +1,4 @@
 //go:build gofuzz
-// +build gofuzz
 
 /*
    Copyright The containerd Authors.
@@ -14,7 +13,7 @@
    limitations under the License.
 */
 
-// nolint: golint
+//nolint:golint
 package fuzz
 
 import (
@@ -40,7 +39,7 @@ func checkBlobPath(dgst digest.Digest, root string) error {
 	if err := dgst.Validate(); err != nil {
 		return err
 	}
-	path := filepath.Join(root, "blobs", dgst.Algorithm().String(), dgst.Hex())
+	path := filepath.Join(root, "blobs", dgst.Algorithm().String(), dgst.Encoded())
 	_, err := os.Stat(path)
 	if err != nil {
 		return err

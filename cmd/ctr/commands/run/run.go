@@ -62,13 +62,11 @@ func parseMountFlag(m string) (specs.Mount, error) {
 	}
 
 	for _, field := range fields {
-		v := strings.SplitN(field, "=", 2)
-		if len(v) < 2 {
+		key, val, ok := strings.Cut(field, "=")
+		if !ok {
 			return mount, fmt.Errorf("invalid mount specification: expected key=val")
 		}
 
-		key := v[0]
-		val := v[1]
 		switch key {
 		case "type":
 			mount.Type = val
@@ -95,35 +93,35 @@ var Command = cli.Command{
 	Flags: append([]cli.Flag{
 		cli.BoolFlag{
 			Name:  "rm",
-			Usage: "remove the container after running",
+			Usage: "Remove the container after running, cannot be used with --detach",
 		},
 		cli.BoolFlag{
 			Name:  "null-io",
-			Usage: "send all IO to /dev/null",
+			Usage: "Send all IO to /dev/null",
 		},
 		cli.StringFlag{
 			Name:  "log-uri",
-			Usage: "log uri",
+			Usage: "Log uri",
 		},
 		cli.BoolFlag{
 			Name:  "detach,d",
-			Usage: "detach from the task after it has started execution",
+			Usage: "Detach from the task after it has started execution, cannot be used with --rm",
 		},
 		cli.StringFlag{
 			Name:  "fifo-dir",
-			Usage: "directory used for storing IO FIFOs",
+			Usage: "Directory used for storing IO FIFOs",
 		},
 		cli.StringFlag{
 			Name:  "cgroup",
-			Usage: "cgroup path (To disable use of cgroup, set to \"\" explicitly)",
+			Usage: "Cgroup path (To disable use of cgroup, set to \"\" explicitly)",
 		},
 		cli.StringFlag{
 			Name:  "platform",
-			Usage: "run image for specific platform",
+			Usage: "Run image for specific platform",
 		},
 		cli.BoolFlag{
 			Name:  "cni",
-			Usage: "enable cni networking for the container",
+			Usage: "Enable cni networking for the container",
 		},
 	}, append(platformRunFlags,
 		append(append(commands.SnapshotterFlags, []cli.Flag{commands.SnapshotterLabels}...),
@@ -134,6 +132,7 @@ var Command = cli.Command{
 			id  string
 			ref string
 
+			rm        = context.Bool("rm")
 			tty       = context.Bool("tty")
 			detach    = context.Bool("detach")
 			config    = context.IsSet("config")
@@ -156,6 +155,10 @@ var Command = cli.Command{
 		if id == "" {
 			return errors.New("container id must be provided")
 		}
+		if rm && detach {
+			return errors.New("flags --detach and --rm cannot be specified together")
+		}
+
 		client, ctx, cancel, err := commands.NewClient(context)
 		if err != nil {
 			return err
@@ -165,7 +168,7 @@ var Command = cli.Command{
 		if err != nil {
 			return err
 		}
-		if context.Bool("rm") && !detach {
+		if rm && !detach {
 			defer container.Delete(ctx, containerd.WithSnapshotCleanup)
 		}
 		var con console.Console

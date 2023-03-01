@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,13 +42,14 @@ import (
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/errdefs"
 	containerdimages "github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/labels"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/pkg/cri/annotations"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
+	snpkg "github.com/containerd/containerd/pkg/snapshotters"
 	distribution "github.com/containerd/containerd/reference/docker"
 	"github.com/containerd/containerd/remotes/docker"
 	"github.com/containerd/containerd/remotes/docker/config"
+	"github.com/containerd/containerd/tracing"
 )
 
 // For image management:
@@ -92,7 +94,22 @@ import (
 // contents are missing but snapshots are ready, is the image still "READY"?
 
 // PullImage pulls an image with authentication config.
-func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
+func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest) (_ *runtime.PullImageResponse, err error) {
+	span := tracing.SpanFromContext(ctx)
+	defer func() {
+		// TODO: add domain label for imagePulls metrics, and we may need to provide a mechanism
+		// for the user to configure the set of registries that they are interested in.
+		if err != nil {
+			imagePulls.WithValues("failure").Inc()
+		} else {
+			imagePulls.WithValues("success").Inc()
+		}
+	}()
+
+	inProgressImagePulls.Inc()
+	defer inProgressImagePulls.Dec()
+	startTime := time.Now()
+
 	imageRef := r.GetImage().GetImage()
 	namedRef, err := distribution.ParseDockerRef(imageRef)
 	if err != nil {
@@ -133,7 +150,10 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		return nil, err
 	}
 	log.G(ctx).Debugf("PullImage %q with snapshotter %s", ref, snapshotter)
-
+	span.SetAttributes(
+		tracing.Attribute("image.ref", ref),
+		tracing.Attribute("snapshotter.name", snapshotter),
+	)
 	pullOpts := []containerd.RemoteOpt{
 		containerd.WithSchema1Conversion, //nolint:staticcheck // Ignore SA1019. Need to keep deprecated package for compatibility.
 		containerd.WithResolver(resolver),
@@ -150,7 +170,7 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 	pullOpts = append(pullOpts, c.encryptedImagesPullOpts()...)
 	if !c.config.ContainerdConfig.DisableSnapshotAnnotations {
 		pullOpts = append(pullOpts,
-			containerd.WithImageHandlerWrapper(appendInfoHandlerWrapper(ref)))
+			containerd.WithImageHandlerWrapper(snpkg.AppendInfoHandlerWrapper(ref)))
 	}
 
 	if c.config.ContainerdConfig.DiscardUnpackedLayers {
@@ -165,6 +185,7 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull and unpack image %q: %w", ref, err)
 	}
+	span.AddEvent("Pull and unpack image complete")
 
 	configDesc, err := image.Config(ctx)
 	if err != nil {
@@ -188,8 +209,12 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		}
 	}
 
-	log.G(ctx).Debugf("Pulled image %q with image id %q, repo tag %q, repo digest %q", imageRef, imageID,
-		repoTag, repoDigest)
+	size, _ := image.Size(ctx)
+	imagePullingSpeed := float64(size) / time.Since(startTime).Seconds()
+	imagePullThroughput.Observe(imagePullingSpeed)
+
+	log.G(ctx).Infof("Pulled image %q with image id %q, repo tag %q, repo digest %q, size %q in %s", imageRef, imageID,
+		repoTag, repoDigest, strconv.FormatInt(size, 10), time.Since(startTime))
 	// NOTE(random-liu): the actual state in containerd is the source of truth, even we maintain
 	// in-memory image store, it's only for in-memory indexing. The image could be removed
 	// by someone else anytime, before/during/after we create the metadata. We should always
@@ -226,11 +251,10 @@ func ParseAuth(auth *runtime.AuthConfig, host string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		fields := strings.SplitN(string(decoded), ":", 2)
-		if len(fields) != 2 {
+		user, passwd, ok := strings.Cut(string(decoded), ":")
+		if !ok {
 			return "", "", fmt.Errorf("invalid decoded auth: %q", decoded)
 		}
-		user, passwd := fields[0], fields[1]
 		return user, strings.Trim(passwd, "\x00"), nil
 	}
 	// TODO(random-liu): Support RegistryToken.
@@ -318,7 +342,7 @@ func (c *criService) getTLSConfig(registryTLSConfig criconfig.TLSConfig) (*tls.C
 		if len(cert.Certificate) != 0 {
 			tlsConfig.Certificates = []tls.Certificate{cert}
 		}
-		tlsConfig.BuildNameToCertificate() // nolint:staticcheck
+		tlsConfig.BuildNameToCertificate() //nolint:staticcheck // TODO(thaJeztah): verify if we should ignore the deprecation; see https://github.com/containerd/containerd/pull/7349/files#r990644833
 	}
 
 	if registryTLSConfig.CAFile != "" {
@@ -400,7 +424,7 @@ func (c *criService) registryHosts(ctx context.Context, auth *runtime.AuthConfig
 				if err != nil {
 					return nil, fmt.Errorf("get TLSConfig for registry %q: %w", e, err)
 				}
-			} else if isLocalHost(host) && u.Scheme == "http" {
+			} else if docker.IsLocalhost(host) && u.Scheme == "http" {
 				// Skipping TLS verification for localhost
 				transport.TLSClientConfig = &tls.Config{
 					InsecureSkipVerify: true,
@@ -445,24 +469,10 @@ func (c *criService) registryHosts(ctx context.Context, auth *runtime.AuthConfig
 
 // defaultScheme returns the default scheme for a registry host.
 func defaultScheme(host string) string {
-	if isLocalHost(host) {
+	if docker.IsLocalhost(host) {
 		return "http"
 	}
 	return "https"
-}
-
-// isLocalHost checks if the registry host is local.
-func isLocalHost(host string) bool {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-
-	if host == "localhost" {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-	return ip.IsLoopback()
 }
 
 // addDefaultScheme returns the endpoint with default scheme
@@ -540,76 +550,6 @@ func (c *criService) encryptedImagesPullOpts() []containerd.RemoteOpt {
 		return []containerd.RemoteOpt{opt}
 	}
 	return nil
-}
-
-const (
-	// targetRefLabel is a label which contains image reference and will be passed
-	// to snapshotters.
-	targetRefLabel = "containerd.io/snapshot/cri.image-ref"
-	// targetManifestDigestLabel is a label which contains manifest digest and will be passed
-	// to snapshotters.
-	targetManifestDigestLabel = "containerd.io/snapshot/cri.manifest-digest"
-	// targetLayerDigestLabel is a label which contains layer digest and will be passed
-	// to snapshotters.
-	targetLayerDigestLabel = "containerd.io/snapshot/cri.layer-digest"
-	// targetImageLayersLabel is a label which contains layer digests contained in
-	// the target image and will be passed to snapshotters for preparing layers in
-	// parallel. Skipping some layers is allowed and only affects performance.
-	targetImageLayersLabel = "containerd.io/snapshot/cri.image-layers"
-)
-
-// appendInfoHandlerWrapper makes a handler which appends some basic information
-// of images like digests for manifest and their child layers as annotations during unpack.
-// These annotations will be passed to snapshotters as labels. These labels will be
-// used mainly by stargz-based snapshotters for querying image contents from the
-// registry.
-func appendInfoHandlerWrapper(ref string) func(f containerdimages.Handler) containerdimages.Handler {
-	return func(f containerdimages.Handler) containerdimages.Handler {
-		return containerdimages.HandlerFunc(func(ctx context.Context, desc imagespec.Descriptor) ([]imagespec.Descriptor, error) {
-			children, err := f.Handle(ctx, desc)
-			if err != nil {
-				return nil, err
-			}
-			switch desc.MediaType {
-			case imagespec.MediaTypeImageManifest, containerdimages.MediaTypeDockerSchema2Manifest:
-				for i := range children {
-					c := &children[i]
-					if containerdimages.IsLayerType(c.MediaType) {
-						if c.Annotations == nil {
-							c.Annotations = make(map[string]string)
-						}
-						c.Annotations[targetRefLabel] = ref
-						c.Annotations[targetLayerDigestLabel] = c.Digest.String()
-						c.Annotations[targetImageLayersLabel] = getLayers(ctx, targetImageLayersLabel, children[i:], labels.Validate)
-						c.Annotations[targetManifestDigestLabel] = desc.Digest.String()
-					}
-				}
-			}
-			return children, nil
-		})
-	}
-}
-
-// getLayers returns comma-separated digests based on the passed list of
-// descriptors. The returned list contains as many digests as possible as well
-// as meets the label validation.
-func getLayers(ctx context.Context, key string, descs []imagespec.Descriptor, validate func(k, v string) error) (layers string) {
-	var item string
-	for _, l := range descs {
-		if containerdimages.IsLayerType(l.MediaType) {
-			item = l.Digest.String()
-			if layers != "" {
-				item = "," + item
-			}
-			// This avoids the label hits the size limitation.
-			if err := validate(key, layers+item); err != nil {
-				log.G(ctx).WithError(err).WithField("label", key).Debugf("%q is omitted in the layers list", l.Digest.String())
-				break
-			}
-			layers += item
-		}
-	}
-	return
 }
 
 const (

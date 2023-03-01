@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"sync"
 	"time"
 
@@ -30,8 +29,10 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	containerdimages "github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/log"
+	criconfig "github.com/containerd/containerd/pkg/cri/config"
+	"github.com/containerd/containerd/pkg/cri/sbserver/podsandbox"
 	"github.com/containerd/containerd/platforms"
-	"github.com/containerd/typeurl"
+	"github.com/containerd/typeurl/v2"
 	"golang.org/x/sync/errgroup"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
@@ -80,6 +81,53 @@ func (c *criService) recover(ctx context.Context) error {
 	}
 	if err := eg.Wait(); err != nil {
 		return err
+	}
+
+	// Recover sandboxes in the new SandboxStore
+	storedSandboxes, err := c.client.SandboxStore().List(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list sandboxes from API: %w", err)
+	}
+	for _, sbx := range storedSandboxes {
+		if _, err := c.sandboxStore.Get(sbx.ID); err == nil {
+			continue
+		}
+
+		metadata := sandboxstore.Metadata{}
+		err := sbx.GetExtension(podsandbox.MetadataKey, &metadata)
+		if err != nil {
+			return fmt.Errorf("failed to get metadata for stored sandbox %q: %w", sbx.ID, err)
+		}
+
+		var (
+			state      = sandboxstore.StateUnknown
+			controller = c.sandboxControllers[criconfig.ModeShim]
+		)
+
+		status, err := controller.Status(ctx, sbx.ID, false)
+		if err != nil {
+			log.G(ctx).WithError(err).Error("failed to recover sandbox state")
+			if errdefs.IsNotFound(err) {
+				state = sandboxstore.StateNotReady
+			}
+		} else {
+			if code, ok := runtime.PodSandboxState_value[status.State]; ok {
+				if code == int32(runtime.PodSandboxState_SANDBOX_READY) {
+					state = sandboxstore.StateReady
+				} else if code == int32(runtime.PodSandboxState_SANDBOX_NOTREADY) {
+					state = sandboxstore.StateNotReady
+				}
+			}
+		}
+
+		sb := sandboxstore.NewSandbox(metadata, sandboxstore.Status{State: state})
+
+		// Load network namespace.
+		sb.NetNS = getNetNS(&metadata)
+
+		if err := c.sandboxStore.Add(sb); err != nil {
+			return fmt.Errorf("failed to add stored sandbox %q to store: %w", sbx.ID, err)
+		}
 	}
 
 	// Recover all containers.
@@ -427,20 +475,20 @@ func (c *criService) loadSandbox(ctx context.Context, cntr containerd.Container)
 	sandbox.Container = cntr
 
 	// Load network namespace.
-	if goruntime.GOOS != "windows" &&
-		meta.Config.GetLinux().GetSecurityContext().GetNamespaceOptions().GetNetwork() == runtime.NamespaceMode_NODE {
-		// Don't need to load netns for host network sandbox.
-		return sandbox, nil
-	}
-	if goruntime.GOOS == "windows" && meta.Config.GetWindows().GetSecurityContext().GetHostProcess() {
-		return sandbox, nil
-	}
-	sandbox.NetNS = netns.LoadNetNS(meta.NetNSPath)
+	sandbox.NetNS = getNetNS(meta)
 
 	// It doesn't matter whether task is running or not. If it is running, sandbox
 	// status will be `READY`; if it is not running, sandbox status will be `NOT_READY`,
 	// kubelet will stop the sandbox which will properly cleanup everything.
 	return sandbox, nil
+}
+
+func getNetNS(meta *sandboxstore.Metadata) *netns.NetNS {
+	// Don't need to load netns for host network sandbox.
+	if hostNetwork(meta.Config) {
+		return nil
+	}
+	return netns.LoadNetNS(meta.NetNSPath)
 }
 
 // loadImages loads images from containerd.

@@ -42,7 +42,7 @@ Users of such distributions may have to install containerd from the source or a 
 
 ##### systemd
 If you intend to start containerd via systemd, you should also download the `containerd.service` unit file from
-https://github.com/containerd/containerd/blob/main/containerd.service into `/usr/local/lib/systemd/system/containerd.service`,
+https://raw.githubusercontent.com/containerd/containerd/main/containerd.service into `/usr/local/lib/systemd/system/containerd.service`,
 and run the following commands:
 
 ```bash
@@ -116,7 +116,7 @@ curl.exe -L https://github.com/containerd/containerd/releases/download/v$Version
 tar.exe xvf .\containerd-windows-amd64.tar.gz
 
 # Copy and configure
-Copy-Item -Path ".\bin\" -Destination "$Env:ProgramFiles\containerd" -Recurse -Force
+Copy-Item -Path ".\bin\*" -Destination "$Env:ProgramFiles\containerd" -Recurse -Force
 cd $Env:ProgramFiles\containerd\
 .\containerd.exe config default | Out-File config.toml -Encoding ascii
 
