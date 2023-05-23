@@ -171,13 +171,21 @@ func (m *monitor) monitor(ctx context.Context) ([]change, error) {
 		// which will result in an `on-failure` restart policy reconcile error.
 		switch desiredStatus {
 		case containerd.Running:
+			switch status.Status {
+			case containerd.Paused, containerd.Pausing:
+				continue
+			default:
+			}
 			if !restart.Reconcile(status, labels) {
 				continue
 			}
+
 			restartCount, _ := strconv.Atoi(labels[restart.CountLabel])
+			if labels["containerd.io/restart.logpath"] != "" {
+				logrus.Warn(`Label "containerd.io/restart.logpath" is no longer supported since containerd v2.0. Use "containerd.io/restart.loguri" instead.`)
+			}
 			changes = append(changes, &startChange{
 				container: c,
-				logPath:   labels[restart.LogPathLabel],
 				logURI:    labels[restart.LogURILabel],
 				count:     restartCount + 1,
 			})

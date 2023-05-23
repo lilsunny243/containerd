@@ -24,12 +24,11 @@ import (
 	"sort"
 	"strings"
 
-	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
-
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/oci"
 	osinterface "github.com/containerd/containerd/pkg/os"
+	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
+	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 // namedPipePath returns true if the given path is to a named pipe.
@@ -68,9 +67,10 @@ func parseMount(osi osinterface.OS, mount *runtime.Mount) (*runtimespec.Mount, e
 			}
 		}
 		var err error
+		originalSrc := src
 		src, err = osi.ResolveSymbolicLink(src)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve symlink %q: %w", src, err)
+			return nil, fmt.Errorf("failed to resolve symlink %q: %w", originalSrc, err)
 		}
 		// hcsshim requires clean path, especially '/' -> '\'. Additionally,
 		// for the destination, absolute paths should have the C: prefix.

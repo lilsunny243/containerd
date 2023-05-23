@@ -23,28 +23,31 @@ import (
 
 	v1 "github.com/containerd/cgroups/v3/cgroup1/stats"
 	v2 "github.com/containerd/cgroups/v3/cgroup2/stats"
-	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
 	"github.com/stretchr/testify/assert"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 func TestGetWorkingSet(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc     string
 		memory   *v1.MemoryStat
 		expected uint64
 	}{
-		"nil memory usage": {
+		{
+			desc:     "nil memory usage",
 			memory:   &v1.MemoryStat{},
 			expected: 0,
 		},
-		"memory usage higher than inactive_total_file": {
+		{
+			desc: "memory usage higher than inactive_total_file",
 			memory: &v1.MemoryStat{
 				TotalInactiveFile: 1000,
 				Usage:             &v1.MemoryEntry{Usage: 2000},
 			},
 			expected: 1000,
 		},
-		"memory usage lower than inactive_total_file": {
+		{
+			desc: "memory usage lower than inactive_total_file",
 			memory: &v1.MemoryStat{
 				TotalInactiveFile: 2000,
 				Usage:             &v1.MemoryEntry{Usage: 1000},
@@ -52,7 +55,8 @@ func TestGetWorkingSet(t *testing.T) {
 			expected: 0,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			got := getWorkingSet(test.memory)
 			assert.Equal(t, test.expected, got)
 		})
@@ -60,22 +64,26 @@ func TestGetWorkingSet(t *testing.T) {
 }
 
 func TestGetWorkingSetV2(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc     string
 		memory   *v2.MemoryStat
 		expected uint64
 	}{
-		"nil memory usage": {
+		{
+			desc:     "nil memory usage",
 			memory:   &v2.MemoryStat{},
 			expected: 0,
 		},
-		"memory usage higher than inactive_total_file": {
+		{
+			desc: "memory usage higher than inactive_total_file",
 			memory: &v2.MemoryStat{
 				InactiveFile: 1000,
 				Usage:        2000,
 			},
 			expected: 1000,
 		},
-		"memory usage lower than inactive_total_file": {
+		{
+			desc: "memory usage lower than inactive_total_file",
 			memory: &v2.MemoryStat{
 				InactiveFile: 2000,
 				Usage:        1000,
@@ -83,7 +91,8 @@ func TestGetWorkingSetV2(t *testing.T) {
 			expected: 0,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			got := getWorkingSetV2(test.memory)
 			assert.Equal(t, test.expected, got)
 		})
@@ -91,13 +100,14 @@ func TestGetWorkingSetV2(t *testing.T) {
 }
 
 func TestGetAvailableBytes(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc            string
 		memory          *v1.MemoryStat
 		workingSetBytes uint64
 		expected        uint64
 	}{
-
-		"no limit": {
+		{
+			desc: "no limit",
 			memory: &v1.MemoryStat{
 				Usage: &v1.MemoryEntry{
 					Limit: math.MaxUint64, // no limit
@@ -107,7 +117,8 @@ func TestGetAvailableBytes(t *testing.T) {
 			workingSetBytes: 500,
 			expected:        0,
 		},
-		"with limit": {
+		{
+			desc: "with limit",
 			memory: &v1.MemoryStat{
 				Usage: &v1.MemoryEntry{
 					Limit: 5000,
@@ -118,7 +129,8 @@ func TestGetAvailableBytes(t *testing.T) {
 			expected:        5000 - 500,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			got := getAvailableBytes(test.memory, test.workingSetBytes)
 			assert.Equal(t, test.expected, got)
 		})
@@ -126,13 +138,14 @@ func TestGetAvailableBytes(t *testing.T) {
 }
 
 func TestGetAvailableBytesV2(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc            string
 		memory          *v2.MemoryStat
 		workingSetBytes uint64
 		expected        uint64
 	}{
-
-		"no limit": {
+		{
+			desc: "no limit",
 			memory: &v2.MemoryStat{
 				UsageLimit: math.MaxUint64, // no limit
 				Usage:      1000,
@@ -140,7 +153,8 @@ func TestGetAvailableBytesV2(t *testing.T) {
 			workingSetBytes: 500,
 			expected:        0,
 		},
-		"with limit": {
+		{
+			desc: "with limit",
 			memory: &v2.MemoryStat{
 				UsageLimit: 5000,
 				Usage:      1000,
@@ -149,91 +163,25 @@ func TestGetAvailableBytesV2(t *testing.T) {
 			expected:        5000 - 500,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			got := getAvailableBytesV2(test.memory, test.workingSetBytes)
 			assert.Equal(t, test.expected, got)
 		})
 	}
 }
 
-func TestContainerMetricsCPU(t *testing.T) {
-	c := newTestCRIService()
-	timestamp := time.Now()
-	secondAfterTimeStamp := timestamp.Add(time.Second)
-	ID := "ID"
-
-	for desc, test := range map[string]struct {
-		firstMetrics   interface{}
-		secondMetrics  interface{}
-		expectedFirst  *runtime.CpuUsage
-		expectedSecond *runtime.CpuUsage
-	}{
-		"v1 metrics": {
-			firstMetrics: &v1.Metrics{
-				CPU: &v1.CPUStat{
-					Usage: &v1.CPUUsage{
-						Total: 50,
-					},
-				},
-			},
-			secondMetrics: &v1.Metrics{
-				CPU: &v1.CPUStat{
-					Usage: &v1.CPUUsage{
-						Total: 500,
-					},
-				},
-			},
-			expectedFirst: &runtime.CpuUsage{
-				Timestamp:            timestamp.UnixNano(),
-				UsageCoreNanoSeconds: &runtime.UInt64Value{Value: 50},
-				UsageNanoCores:       &runtime.UInt64Value{Value: 0},
-			},
-			expectedSecond: &runtime.CpuUsage{
-				Timestamp:            secondAfterTimeStamp.UnixNano(),
-				UsageCoreNanoSeconds: &runtime.UInt64Value{Value: 500},
-				UsageNanoCores:       &runtime.UInt64Value{Value: 450},
-			},
-		},
-	} {
-		t.Run(desc, func(t *testing.T) {
-			container, err := containerstore.NewContainer(
-				containerstore.Metadata{ID: ID},
-			)
-			assert.NoError(t, err)
-			assert.Nil(t, container.Stats)
-			err = c.containerStore.Add(container)
-			assert.NoError(t, err)
-
-			cpuUsage, err := c.cpuContainerStats(ID, false, test.firstMetrics, timestamp)
-			assert.NoError(t, err)
-
-			container, err = c.containerStore.Get(ID)
-			assert.NoError(t, err)
-			assert.NotNil(t, container.Stats)
-
-			assert.Equal(t, test.expectedFirst, cpuUsage)
-
-			cpuUsage, err = c.cpuContainerStats(ID, false, test.secondMetrics, secondAfterTimeStamp)
-			assert.NoError(t, err)
-			assert.Equal(t, test.expectedSecond, cpuUsage)
-
-			container, err = c.containerStore.Get(ID)
-			assert.NoError(t, err)
-			assert.NotNil(t, container.Stats)
-		})
-	}
-
-}
-
 func TestContainerMetricsMemory(t *testing.T) {
 	c := newTestCRIService()
 	timestamp := time.Now()
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc     string
 		metrics  interface{}
 		expected *runtime.MemoryUsage
 	}{
-		"v1 metrics - no memory limit": {
+		{
+			desc: "v1 metrics - no memory limit",
 			metrics: &v1.Metrics{
 				Memory: &v1.MemoryStat{
 					Usage: &v1.MemoryEntry{
@@ -256,7 +204,8 @@ func TestContainerMetricsMemory(t *testing.T) {
 				MajorPageFaults: &runtime.UInt64Value{Value: 12},
 			},
 		},
-		"v1 metrics - memory limit": {
+		{
+			desc: "v1 metrics - memory limit",
 			metrics: &v1.Metrics{
 				Memory: &v1.MemoryStat{
 					Usage: &v1.MemoryEntry{
@@ -279,7 +228,8 @@ func TestContainerMetricsMemory(t *testing.T) {
 				MajorPageFaults: &runtime.UInt64Value{Value: 12},
 			},
 		},
-		"v2 metrics - memory limit": {
+		{
+			desc: "v2 metrics - memory limit",
 			metrics: &v2.Metrics{
 				Memory: &v2.MemoryStat{
 					Usage:        1000,
@@ -299,7 +249,8 @@ func TestContainerMetricsMemory(t *testing.T) {
 				MajorPageFaults: &runtime.UInt64Value{Value: 12},
 			},
 		},
-		"v2 metrics - no memory limit": {
+		{
+			desc: "v2 metrics - no memory limit",
 			metrics: &v2.Metrics{
 				Memory: &v2.MemoryStat{
 					Usage:        1000,
@@ -320,7 +271,8 @@ func TestContainerMetricsMemory(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			got, err := c.memoryContainerStats("ID", test.metrics, timestamp)
 			assert.NoError(t, err)
 			assert.Equal(t, test.expected, got)

@@ -209,8 +209,9 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		}
 	}
 
+	const mbToByte = 1024 * 1024
 	size, _ := image.Size(ctx)
-	imagePullingSpeed := float64(size) / time.Since(startTime).Seconds()
+	imagePullingSpeed := float64(size) / mbToByte / time.Since(startTime).Seconds()
 	imagePullThroughput.Observe(imagePullingSpeed)
 
 	log.G(ctx).Infof("Pulled image %q with image id %q, repo tag %q, repo digest %q, size %q in %s", imageRef, imageID,
@@ -342,7 +343,8 @@ func (c *criService) getTLSConfig(registryTLSConfig criconfig.TLSConfig) (*tls.C
 		if len(cert.Certificate) != 0 {
 			tlsConfig.Certificates = []tls.Certificate{cert}
 		}
-		tlsConfig.BuildNameToCertificate() //nolint:staticcheck // TODO(thaJeztah): verify if we should ignore the deprecation; see https://github.com/containerd/containerd/pull/7349/files#r990644833
+		// TODO(thaJeztah): verify if we should ignore the deprecation; see https://github.com/containerd/containerd/pull/7349/files#r990644833
+		tlsConfig.BuildNameToCertificate() //nolint:staticcheck
 	}
 
 	if registryTLSConfig.CAFile != "" {

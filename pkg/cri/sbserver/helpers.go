@@ -27,28 +27,24 @@ import (
 	"strings"
 	"time"
 
+	runhcsoptions "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/containerd/typeurl/v2"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
+	"github.com/pelletier/go-toml"
+	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
 	clabels "github.com/containerd/containerd/labels"
+	"github.com/containerd/containerd/log"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
 	imagestore "github.com/containerd/containerd/pkg/cri/store/image"
 	sandboxstore "github.com/containerd/containerd/pkg/cri/store/sandbox"
 	runtimeoptions "github.com/containerd/containerd/pkg/runtimeoptions/v1"
 	"github.com/containerd/containerd/plugin"
-	"github.com/containerd/containerd/reference/docker"
-	"github.com/containerd/containerd/runtime/linux/runctypes"
 	runcoptions "github.com/containerd/containerd/runtime/v2/runc/options"
-
-	runhcsoptions "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
-	imagedigest "github.com/opencontainers/go-digest"
-	"github.com/pelletier/go-toml"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 // TODO: Move common helpers for sbserver and podsandbox to a dedicated package once basic services are functinal.
@@ -84,10 +80,7 @@ const (
 	containerKindSandbox = "sandbox"
 	// containerKindContainer is a label value indicating container is application container
 	containerKindContainer = "container"
-	// imageLabelKey is the label key indicating the image is managed by cri plugin.
-	imageLabelKey = criContainerdPrefix + ".image"
-	// imageLabelValue is the label value indicating the image is managed by cri plugin.
-	imageLabelValue = "managed"
+
 	// sandboxMetadataExtension is an extension name that identify metadata of sandbox in CreateContainerRequest
 	sandboxMetadataExtension = criContainerdPrefix + ".sandbox.metadata"
 	// containerMetadataExtension is an extension name that identify metadata of container in CreateContainerRequest
@@ -98,7 +91,48 @@ const (
 
 	// runtimeRunhcsV1 is the runtime type for runhcs.
 	runtimeRunhcsV1 = "io.containerd.runhcs.v1"
+
+	// devShm is the default path of /dev/shm.
+	devShm = "/dev/shm"
+	// etcHosts is the default path of /etc/hosts file.
+	etcHosts = "/etc/hosts"
+	// etcHostname is the default path of /etc/hostname file.
+	etcHostname = "/etc/hostname"
+	// resolvConfPath is the abs path of resolv.conf on host or container.
+	resolvConfPath = "/etc/resolv.conf"
 )
+
+// getSandboxRootDir returns the root directory for managing sandbox files,
+// e.g. hosts files.
+func (c *criService) getSandboxRootDir(id string) string {
+	return filepath.Join(c.config.RootDir, sandboxesDir, id)
+}
+
+// getVolatileSandboxRootDir returns the root directory for managing volatile sandbox files,
+// e.g. named pipes.
+func (c *criService) getVolatileSandboxRootDir(id string) string {
+	return filepath.Join(c.config.StateDir, sandboxesDir, id)
+}
+
+// getSandboxHostname returns the hostname file path inside the sandbox root directory.
+func (c *criService) getSandboxHostname(id string) string {
+	return filepath.Join(c.getSandboxRootDir(id), "hostname")
+}
+
+// getSandboxHosts returns the hosts file path inside the sandbox root directory.
+func (c *criService) getSandboxHosts(id string) string {
+	return filepath.Join(c.getSandboxRootDir(id), "hosts")
+}
+
+// getResolvPath returns resolv.conf filepath for specified sandbox.
+func (c *criService) getResolvPath(id string) string {
+	return filepath.Join(c.getSandboxRootDir(id), "resolv.conf")
+}
+
+// getSandboxDevShm returns the shm file path inside the sandbox root directory.
+func (c *criService) getSandboxDevShm(id string) string {
+	return filepath.Join(c.getVolatileSandboxRootDir(id), "shm")
+}
 
 // makeSandboxName generates sandbox name from sandbox metadata. The name
 // generated is unique as long as sandbox metadata is unique.
@@ -141,51 +175,6 @@ func criContainerStateToString(state runtime.ContainerState) string {
 	return runtime.ContainerState_name[int32(state)]
 }
 
-// getRepoDigestAngTag returns image repoDigest and repoTag of the named image reference.
-func getRepoDigestAndTag(namedRef docker.Named, digest imagedigest.Digest, schema1 bool) (string, string) {
-	var repoTag, repoDigest string
-	if _, ok := namedRef.(docker.NamedTagged); ok {
-		repoTag = namedRef.String()
-	}
-	if _, ok := namedRef.(docker.Canonical); ok {
-		repoDigest = namedRef.String()
-	} else if !schema1 {
-		// digest is not actual repo digest for schema1 image.
-		repoDigest = namedRef.Name() + "@" + digest.String()
-	}
-	return repoDigest, repoTag
-}
-
-// localResolve resolves image reference locally and returns corresponding image metadata. It
-// returns errdefs.ErrNotFound if the reference doesn't exist.
-func (c *criService) localResolve(refOrID string) (imagestore.Image, error) {
-	getImageID := func(refOrId string) string {
-		if _, err := imagedigest.Parse(refOrID); err == nil {
-			return refOrID
-		}
-		return func(ref string) string {
-			// ref is not image id, try to resolve it locally.
-			// TODO(random-liu): Handle this error better for debugging.
-			normalized, err := docker.ParseDockerRef(ref)
-			if err != nil {
-				return ""
-			}
-			id, err := c.imageStore.Resolve(normalized.String())
-			if err != nil {
-				return ""
-			}
-			return id
-		}(refOrID)
-	}
-
-	imageID := getImageID(refOrID)
-	if imageID == "" {
-		// Try to treat ref as imageID
-		imageID = refOrID
-	}
-	return c.imageStore.Get(imageID)
-}
-
 // toContainerdImage converts an image object in image store to containerd image handler.
 func (c *criService) toContainerdImage(ctx context.Context, image imagestore.Image) (containerd.Image, error) {
 	// image should always have at least one reference.
@@ -212,30 +201,6 @@ func getUserFromImage(user string) (*int64, string) {
 	}
 	// If user is a numeric uid.
 	return &uid, ""
-}
-
-// EnsureImageExists returns corresponding metadata of the image reference, if image is not
-// pulled yet, the function will pull the image.
-func (c *criService) EnsureImageExists(ctx context.Context, ref string, config *runtime.PodSandboxConfig) (*imagestore.Image, error) {
-	image, err := c.localResolve(ref)
-	if err != nil && !errdefs.IsNotFound(err) {
-		return nil, fmt.Errorf("failed to get image %q: %w", ref, err)
-	}
-	if err == nil {
-		return &image, nil
-	}
-	// Pull image to ensure the image exists
-	resp, err := c.PullImage(ctx, &runtime.PullImageRequest{Image: &runtime.ImageSpec{Image: ref}, SandboxConfig: config})
-	if err != nil {
-		return nil, fmt.Errorf("failed to pull image %q: %w", ref, err)
-	}
-	imageID := resp.GetImageRef()
-	newImage, err := c.imageStore.Get(imageID)
-	if err != nil {
-		// It's still possible that someone removed the image right after it is pulled.
-		return nil, fmt.Errorf("failed to get image %q after pulling: %w", imageID, err)
-	}
-	return &newImage, nil
 }
 
 // validateTargetContainer checks that a container is a valid
@@ -288,7 +253,7 @@ func buildLabels(configLabels, imageConfigLabels map[string]string, containerTyp
 		} else {
 			// In case the image label is invalid, we output a warning and skip adding it to the
 			// container.
-			logrus.WithError(err).Warnf("unable to add image label with key %s to the container", k)
+			log.L.WithError(err).Warnf("unable to add image label with key %s to the container", k)
 		}
 	}
 	// labels from the CRI request (config) will override labels in the image config
@@ -299,46 +264,10 @@ func buildLabels(configLabels, imageConfigLabels map[string]string, containerTyp
 	return labels
 }
 
-// toRuntimeAuthConfig converts cri plugin auth config to runtime auth config.
-func toRuntimeAuthConfig(a criconfig.AuthConfig) *runtime.AuthConfig {
-	return &runtime.AuthConfig{
-		Username:      a.Username,
-		Password:      a.Password,
-		Auth:          a.Auth,
-		IdentityToken: a.IdentityToken,
-	}
-}
-
-// parseImageReferences parses a list of arbitrary image references and returns
-// the repotags and repodigests
-func parseImageReferences(refs []string) ([]string, []string) {
-	var tags, digests []string
-	for _, ref := range refs {
-		parsed, err := docker.ParseAnyReference(ref)
-		if err != nil {
-			continue
-		}
-		if _, ok := parsed.(docker.Canonical); ok {
-			digests = append(digests, parsed.String())
-		} else if _, ok := parsed.(docker.Tagged); ok {
-			tags = append(tags, parsed.String())
-		}
-	}
-	return tags, digests
-}
-
 // generateRuntimeOptions generates runtime options from cri plugin config.
 func generateRuntimeOptions(r criconfig.Runtime, c criconfig.Config) (interface{}, error) {
 	if r.Options == nil {
-		if r.Type != plugin.RuntimeLinuxV1 {
-			return nil, nil
-		}
-		// This is a legacy config, generate runctypes.RuncOptions.
-		return &runctypes.RuncOptions{
-			Runtime:       r.Engine,
-			RuntimeRoot:   r.Root,
-			SystemdCgroup: c.SystemdCgroup,
-		}, nil
+		return nil, nil
 	}
 	optionsTree, err := toml.TreeFromMap(r.Options)
 	if err != nil {
@@ -364,12 +293,8 @@ func generateRuntimeOptions(r criconfig.Runtime, c criconfig.Config) (interface{
 // getRuntimeOptionsType gets empty runtime options by the runtime type name.
 func getRuntimeOptionsType(t string) interface{} {
 	switch t {
-	case plugin.RuntimeRuncV1:
-		fallthrough
 	case plugin.RuntimeRuncV2:
 		return &runcoptions.Options{}
-	case plugin.RuntimeLinuxV1:
-		return &runctypes.RuncOptions{}
 	case runtimeRunhcsV1:
 		return &runhcsoptions.Options{}
 	default:
@@ -522,12 +447,12 @@ func copyResourcesToStatus(spec *runtimespec.Spec, status containerstore.Status)
 func (c *criService) generateAndSendContainerEvent(ctx context.Context, containerID string, sandboxID string, eventType runtime.ContainerEventType) {
 	podSandboxStatus, err := c.getPodSandboxStatus(ctx, sandboxID)
 	if err != nil {
-		logrus.Warnf("Failed to get podSandbox status for container event for sandboxID %q: %v. Sending the event with nil podSandboxStatus.", sandboxID, err)
+		log.G(ctx).Warnf("Failed to get podSandbox status for container event for sandboxID %q: %v. Sending the event with nil podSandboxStatus.", sandboxID, err)
 		podSandboxStatus = nil
 	}
 	containerStatuses, err := c.getContainerStatuses(ctx, sandboxID)
 	if err != nil {
-		logrus.Errorf("Failed to get container statuses for container event for sandboxID %q: %v", sandboxID, err)
+		log.G(ctx).Errorf("Failed to get container statuses for container event for sandboxID %q: %v", sandboxID, err)
 	}
 
 	event := runtime.ContainerEventResponse{
@@ -542,7 +467,7 @@ func (c *criService) generateAndSendContainerEvent(ctx context.Context, containe
 	select {
 	case c.containerEventsChan <- event:
 	default:
-		logrus.Debugf("containerEventsChan is full, discarding event %+v", event)
+		log.G(ctx).Debugf("containerEventsChan is full, discarding event %+v", event)
 	}
 }
 

@@ -40,7 +40,6 @@ import (
 	"github.com/containerd/containerd/snapshots"
 	"github.com/intel/goresctrl/pkg/blockio"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
 
@@ -102,6 +101,10 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		cOpts []containerd.NewContainerOpts
 		spec  containerd.NewContainerOpts
 	)
+
+	if sandbox := context.String("sandbox"); sandbox != "" {
+		cOpts = append(cOpts, containerd.WithSandbox(sandbox))
+	}
 
 	if config {
 		cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
@@ -239,10 +242,6 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, oci.WithAnnotations(annos))
 		}
 
-		if context.Bool("cni") {
-			cniMeta := &commands.NetworkMetaData{EnableCni: true}
-			cOpts = append(cOpts, containerd.WithContainerExtension(commands.CtrCniMetadataExtension, cniMeta))
-		}
 		if caps := context.StringSlice("cap-add"); len(caps) > 0 {
 			for _, cap := range caps {
 				if !strings.HasPrefix(cap, "CAP_") {
@@ -375,6 +374,11 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		}
 	}
 
+	if context.Bool("cni") {
+		cniMeta := &commands.NetworkMetaData{EnableCni: true}
+		cOpts = append(cOpts, containerd.WithContainerExtension(commands.CtrCniMetadataExtension, cniMeta))
+	}
+
 	runtimeOpts, err := getRuntimeOptions(context)
 	if err != nil {
 		return nil, err
@@ -429,30 +433,6 @@ func getRuntimeOptions(context *cli.Context) (interface{}, error) {
 	}
 
 	return nil, nil
-}
-
-func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
-	var (
-		tOpts []containerd.NewTaskOpts
-	)
-	if context.Bool("no-pivot") {
-		tOpts = append(tOpts, containerd.WithNoPivotRoot)
-	}
-	if uidmap := context.String("uidmap"); uidmap != "" {
-		uidMap, err := parseIDMapping(uidmap)
-		if err != nil {
-			logrus.WithError(err).Warn("unable to parse uidmap; defaulting to uid 0 IO ownership")
-		}
-		tOpts = append(tOpts, containerd.WithUIDOwner(uidMap.HostID))
-	}
-	if gidmap := context.String("gidmap"); gidmap != "" {
-		gidMap, err := parseIDMapping(gidmap)
-		if err != nil {
-			logrus.WithError(err).Warn("unable to parse gidmap; defaulting to gid 0 IO ownership")
-		}
-		tOpts = append(tOpts, containerd.WithGIDOwner(gidMap.HostID))
-	}
-	return tOpts
 }
 
 func parseIDMapping(mapping string) (specs.LinuxIDMapping, error) {

@@ -26,8 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
-	"github.com/containerd/containerd/pkg/cri/annotations"
-	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	sandboxstore "github.com/containerd/containerd/pkg/cri/store/sandbox"
 )
 
@@ -40,27 +38,31 @@ func TestSandboxContainerSpec(t *testing.T) {
 	}
 	testID := "test-id"
 	nsPath := "test-cni"
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc              string
 		configChange      func(*runtime.PodSandboxConfig)
 		podAnnotations    []string
 		imageConfigChange func(*imagespec.ImageConfig)
 		specCheck         func(*testing.T, *runtimespec.Spec)
 		expectErr         bool
 	}{
-		"should return error when entrypoint and cmd are empty": {
+		{
+			desc: "should return error when entrypoint and cmd are empty",
 			imageConfigChange: func(c *imagespec.ImageConfig) {
 				c.Entrypoint = nil
 				c.Cmd = nil
 			},
 			expectErr: true,
 		},
-		"a passthrough annotation should be passed as an OCI annotation": {
+		{
+			desc:           "a passthrough annotation should be passed as an OCI annotation",
 			podAnnotations: []string{"c"},
 			specCheck: func(t *testing.T, spec *runtimespec.Spec) {
 				assert.Equal(t, spec.Annotations["c"], "d")
 			},
 		},
-		"a non-passthrough annotation should not be passed as an OCI annotation": {
+		{
+			desc: "a non-passthrough annotation should not be passed as an OCI annotation",
 			configChange: func(c *runtime.PodSandboxConfig) {
 				c.Annotations["d"] = "e"
 			},
@@ -71,7 +73,8 @@ func TestSandboxContainerSpec(t *testing.T) {
 				assert.False(t, ok)
 			},
 		},
-		"passthrough annotations should support wildcard match": {
+		{
+			desc: "passthrough annotations should support wildcard match",
 			configChange: func(c *runtime.PodSandboxConfig) {
 				c.Annotations["t.f"] = "j"
 				c.Annotations["z.g"] = "o"
@@ -91,7 +94,8 @@ func TestSandboxContainerSpec(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			c := newControllerService()
 			config, imageConfig, specCheck := getRunPodSandboxTestData()
 			if test.configChange != nil {
@@ -119,11 +123,15 @@ func TestSandboxContainerSpec(t *testing.T) {
 }
 
 func TestTypeurlMarshalUnmarshalSandboxMeta(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc         string
 		configChange func(*runtime.PodSandboxConfig)
 	}{
-		"should marshal original config": {},
-		"should marshal Linux": {
+		{
+			desc: "should marshal original config",
+		},
+		{
+			desc: "should marshal Linux",
 			configChange: func(c *runtime.PodSandboxConfig) {
 				if c.Linux == nil {
 					c.Linux = &runtime.LinuxPodSandboxConfig{}
@@ -139,7 +147,8 @@ func TestTypeurlMarshalUnmarshalSandboxMeta(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			meta := &sandboxstore.Metadata{
 				ID:        "1",
 				Name:      "sandbox_1",
@@ -200,173 +209,11 @@ func TestHostAccessingSandbox(t *testing.T) {
 		{"Security Context namespace host access", hostNamespace, true},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			if got := hostAccessingSandbox(tt.config); got != tt.want {
 				t.Errorf("hostAccessingSandbox() = %v, want %v", got, tt.want)
 			}
-		})
-	}
-}
-
-func TestGetSandboxRuntime(t *testing.T) {
-	untrustedWorkloadRuntime := criconfig.Runtime{
-		Type:   "io.containerd.runtime.v1.linux",
-		Engine: "untrusted-workload-runtime",
-		Root:   "",
-	}
-
-	defaultRuntime := criconfig.Runtime{
-		Type:   "io.containerd.runtime.v1.linux",
-		Engine: "default-runtime",
-		Root:   "",
-	}
-
-	fooRuntime := criconfig.Runtime{
-		Type:   "io.containerd.runtime.v1.linux",
-		Engine: "foo-bar",
-		Root:   "",
-	}
-
-	for desc, test := range map[string]struct {
-		sandboxConfig   *runtime.PodSandboxConfig
-		runtimeHandler  string
-		runtimes        map[string]criconfig.Runtime
-		expectErr       bool
-		expectedRuntime criconfig.Runtime
-	}{
-		"should return error if untrusted workload requires host access": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Linux: &runtime.LinuxPodSandboxConfig{
-					SecurityContext: &runtime.LinuxSandboxSecurityContext{
-						Privileged: false,
-						NamespaceOptions: &runtime.NamespaceOption{
-							Network: runtime.NamespaceMode_NODE,
-							Pid:     runtime.NamespaceMode_NODE,
-							Ipc:     runtime.NamespaceMode_NODE,
-						},
-					},
-				},
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "true",
-				},
-			},
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-			},
-			expectErr: true,
-		},
-		"should use untrusted workload runtime for untrusted workload": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "true",
-				},
-			},
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-			},
-			expectedRuntime: untrustedWorkloadRuntime,
-		},
-		"should use default runtime for regular workload": {
-			sandboxConfig: &runtime.PodSandboxConfig{},
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault: defaultRuntime,
-			},
-			expectedRuntime: defaultRuntime,
-		},
-		"should use default runtime for trusted workload": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "false",
-				},
-			},
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-			},
-			expectedRuntime: defaultRuntime,
-		},
-		"should return error if untrusted workload runtime is required but not configured": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "true",
-				},
-			},
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault: defaultRuntime,
-			},
-			expectErr: true,
-		},
-		"should use 'untrusted' runtime for untrusted workload": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "true",
-				},
-			},
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-			},
-			expectedRuntime: untrustedWorkloadRuntime,
-		},
-		"should use 'untrusted' runtime for untrusted workload & handler": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "true",
-				},
-			},
-			runtimeHandler: "untrusted",
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-			},
-			expectedRuntime: untrustedWorkloadRuntime,
-		},
-		"should return an error if untrusted annotation with conflicting handler": {
-			sandboxConfig: &runtime.PodSandboxConfig{
-				Annotations: map[string]string{
-					annotations.UntrustedWorkload: "true",
-				},
-			},
-			runtimeHandler: "foo",
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-				"foo":                      fooRuntime,
-			},
-			expectErr: true,
-		},
-		"should use correct runtime for a runtime handler": {
-			sandboxConfig:  &runtime.PodSandboxConfig{},
-			runtimeHandler: "foo",
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault:   defaultRuntime,
-				criconfig.RuntimeUntrusted: untrustedWorkloadRuntime,
-				"foo":                      fooRuntime,
-			},
-			expectedRuntime: fooRuntime,
-		},
-		"should return error if runtime handler is required but not configured": {
-			sandboxConfig:  &runtime.PodSandboxConfig{},
-			runtimeHandler: "bar",
-			runtimes: map[string]criconfig.Runtime{
-				criconfig.RuntimeDefault: defaultRuntime,
-				"foo":                    fooRuntime,
-			},
-			expectErr: true,
-		},
-	} {
-		t.Run(desc, func(t *testing.T) {
-			cri := newControllerService()
-			cri.config = criconfig.Config{
-				PluginConfig: criconfig.DefaultConfig(),
-			}
-			cri.config.ContainerdConfig.DefaultRuntimeName = criconfig.RuntimeDefault
-			cri.config.ContainerdConfig.Runtimes = test.runtimes
-			r, err := cri.getSandboxRuntime(test.sandboxConfig, test.runtimeHandler)
-			assert.Equal(t, test.expectErr, err != nil)
-			assert.Equal(t, test.expectedRuntime, r)
 		})
 	}
 }

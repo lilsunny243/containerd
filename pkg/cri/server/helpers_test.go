@@ -33,7 +33,6 @@ import (
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/protobuf/types"
 	"github.com/containerd/containerd/reference/docker"
-	"github.com/containerd/containerd/runtime/linux/runctypes"
 	runcoptions "github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/typeurl/v2"
 
@@ -49,36 +48,44 @@ import (
 // TestGetUserFromImage tests the logic of getting image uid or user name of image user.
 func TestGetUserFromImage(t *testing.T) {
 	newI64 := func(i int64) *int64 { return &i }
-	for c, test := range map[string]struct {
+	for _, test := range []struct {
+		desc string
 		user string
 		uid  *int64
 		name string
 	}{
-		"no gid": {
+		{
+			desc: "no gid",
 			user: "0",
 			uid:  newI64(0),
 		},
-		"uid/gid": {
+		{
+			desc: "uid/gid",
 			user: "0:1",
 			uid:  newI64(0),
 		},
-		"empty user": {
+		{
+			desc: "empty user",
 			user: "",
 		},
-		"multiple separators": {
+		{
+			desc: "multiple separators",
 			user: "1:2:3",
 			uid:  newI64(1),
 		},
-		"root username": {
+		{
+			desc: "root username",
 			user: "root:root",
 			name: "root",
 		},
-		"username": {
+		{
+			desc: "username",
 			user: "test:test",
 			name: "test",
 		},
 	} {
-		t.Run(c, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			actualUID, actualName := getUserFromImage(test.user)
 			assert.Equal(t, test.uid, actualUID)
 			assert.Equal(t, test.name, actualName)
@@ -88,35 +95,41 @@ func TestGetUserFromImage(t *testing.T) {
 
 func TestGetRepoDigestAndTag(t *testing.T) {
 	digest := imagedigest.Digest("sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582")
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc               string
 		ref                string
 		schema1            bool
 		expectedRepoDigest string
 		expectedRepoTag    string
 	}{
-		"repo tag should be empty if original ref has no tag": {
+		{
+			desc:               "repo tag should be empty if original ref has no tag",
 			ref:                "gcr.io/library/busybox@" + digest.String(),
 			expectedRepoDigest: "gcr.io/library/busybox@" + digest.String(),
 		},
-		"repo tag should not be empty if original ref has tag": {
+		{
+			desc:               "repo tag should not be empty if original ref has tag",
 			ref:                "gcr.io/library/busybox:latest",
 			expectedRepoDigest: "gcr.io/library/busybox@" + digest.String(),
 			expectedRepoTag:    "gcr.io/library/busybox:latest",
 		},
-		"repo digest should be empty if original ref is schema1 and has no digest": {
+		{
+			desc:               "repo digest should be empty if original ref is schema1 and has no digest",
 			ref:                "gcr.io/library/busybox:latest",
 			schema1:            true,
 			expectedRepoDigest: "",
 			expectedRepoTag:    "gcr.io/library/busybox:latest",
 		},
-		"repo digest should not be empty if original ref is schema1 but has digest": {
+		{
+			desc:               "repo digest should not be empty if original ref is schema1 but has digest",
 			ref:                "gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59594",
 			schema1:            true,
 			expectedRepoDigest: "gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59594",
 			expectedRepoTag:    "",
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			named, err := docker.ParseDockerRef(test.ref)
 			assert.NoError(t, err)
 			repoDigest, repoTag := getRepoDigestAndTag(named, digest, test.schema1)
@@ -206,29 +219,19 @@ func TestLocalResolve(t *testing.T) {
 
 func TestGenerateRuntimeOptions(t *testing.T) {
 	nilOpts := `
-systemd_cgroup = true
 [containerd]
   no_pivot = true
   default_runtime_name = "default"
-[containerd.runtimes.legacy]
-  runtime_type = "` + plugin.RuntimeLinuxV1 + `"
-[containerd.runtimes.runc]
-  runtime_type = "` + plugin.RuntimeRuncV1 + `"
 [containerd.runtimes.runcv2]
   runtime_type = "` + plugin.RuntimeRuncV2 + `"
 `
 	nonNilOpts := `
-systemd_cgroup = true
 [containerd]
   no_pivot = true
   default_runtime_name = "default"
-[containerd.runtimes.legacy]
-  runtime_type = "` + plugin.RuntimeLinuxV1 + `"
 [containerd.runtimes.legacy.options]
   Runtime = "legacy"
   RuntimeRoot = "/legacy"
-[containerd.runtimes.runc]
-  runtime_type = "` + plugin.RuntimeRuncV1 + `"
 [containerd.runtimes.runc.options]
   BinaryName = "runc"
   Root = "/runc"
@@ -245,7 +248,7 @@ systemd_cgroup = true
 	require.NoError(t, err)
 	err = tree.Unmarshal(&nilOptsConfig)
 	require.NoError(t, err)
-	require.Len(t, nilOptsConfig.Runtimes, 3)
+	require.Len(t, nilOptsConfig.Runtimes, 1)
 
 	tree, err = toml.Load(nonNilOpts)
 	require.NoError(t, err)
@@ -253,56 +256,31 @@ systemd_cgroup = true
 	require.NoError(t, err)
 	require.Len(t, nonNilOptsConfig.Runtimes, 3)
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc            string
 		r               criconfig.Runtime
 		c               criconfig.Config
 		expectedOptions interface{}
 	}{
-		"when options is nil, should return nil option for io.containerd.runc.v1": {
-			r:               nilOptsConfig.Runtimes["runc"],
-			c:               nilOptsConfig,
-			expectedOptions: nil,
-		},
-		"when options is nil, should return nil option for io.containerd.runc.v2": {
+		{
+			desc:            "when options is nil, should return nil option for io.containerd.runc.v2",
 			r:               nilOptsConfig.Runtimes["runcv2"],
 			c:               nilOptsConfig,
 			expectedOptions: nil,
 		},
-		"when options is nil, should use legacy fields for legacy runtime": {
-			r: nilOptsConfig.Runtimes["legacy"],
-			c: nilOptsConfig,
-			expectedOptions: &runctypes.RuncOptions{
-				SystemdCgroup: true,
-			},
-		},
-		"when options is not nil, should be able to decode for io.containerd.runc.v1": {
-			r: nonNilOptsConfig.Runtimes["runc"],
-			c: nonNilOptsConfig,
-			expectedOptions: &runcoptions.Options{
-				BinaryName:   "runc",
-				Root:         "/runc",
-				NoNewKeyring: true,
-			},
-		},
-		"when options is not nil, should be able to decode for io.containerd.runc.v2": {
-			r: nonNilOptsConfig.Runtimes["runcv2"],
-			c: nonNilOptsConfig,
+		{
+			desc: "when options is not nil, should be able to decode for io.containerd.runc.v2",
+			r:    nonNilOptsConfig.Runtimes["runcv2"],
+			c:    nonNilOptsConfig,
 			expectedOptions: &runcoptions.Options{
 				BinaryName:   "runc",
 				Root:         "/runcv2",
 				NoNewKeyring: true,
 			},
 		},
-		"when options is not nil, should be able to decode for legacy runtime": {
-			r: nonNilOptsConfig.Runtimes["legacy"],
-			c: nonNilOptsConfig,
-			expectedOptions: &runctypes.RuncOptions{
-				Runtime:     "legacy",
-				RuntimeRoot: "/legacy",
-			},
-		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			opts, err := generateRuntimeOptions(test.r, test.c)
 			assert.NoError(t, err)
 			assert.Equal(t, test.expectedOptions, opts)
@@ -311,18 +289,21 @@ systemd_cgroup = true
 }
 
 func TestEnvDeduplication(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc     string
 		existing []string
 		kv       [][2]string
 		expected []string
 	}{
-		"single env": {
+		{
+			desc: "single env",
 			kv: [][2]string{
 				{"a", "b"},
 			},
 			expected: []string{"a=b"},
 		},
-		"multiple envs": {
+		{
+			desc: "multiple envs",
 			kv: [][2]string{
 				{"a", "b"},
 				{"c", "d"},
@@ -334,7 +315,8 @@ func TestEnvDeduplication(t *testing.T) {
 				"e=f",
 			},
 		},
-		"env override": {
+		{
+			desc: "env override",
 			kv: [][2]string{
 				{"k1", "v1"},
 				{"k2", "v2"},
@@ -350,7 +332,8 @@ func TestEnvDeduplication(t *testing.T) {
 				"k4=v6",
 			},
 		},
-		"existing env": {
+		{
+			desc: "existing env",
 			existing: []string{
 				"k1=v1",
 				"k2=v2",
@@ -369,7 +352,8 @@ func TestEnvDeduplication(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			var spec runtimespec.Spec
 			if len(test.existing) > 0 {
 				spec.Process = &runtimespec.Process{
@@ -385,17 +369,20 @@ func TestEnvDeduplication(t *testing.T) {
 }
 
 func TestPassThroughAnnotationsFilter(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc                   string
 		podAnnotations         map[string]string
 		runtimePodAnnotations  []string
 		passthroughAnnotations map[string]string
 	}{
-		"should support direct match": {
+		{
+			desc:                   "should support direct match",
 			podAnnotations:         map[string]string{"c": "d", "d": "e"},
 			runtimePodAnnotations:  []string{"c"},
 			passthroughAnnotations: map[string]string{"c": "d"},
 		},
-		"should support wildcard match": {
+		{
+			desc: "should support wildcard match",
 			podAnnotations: map[string]string{
 				"t.f":  "j",
 				"z.g":  "o",
@@ -410,7 +397,8 @@ func TestPassThroughAnnotationsFilter(t *testing.T) {
 				"y.ca": "b",
 			},
 		},
-		"should support wildcard match all": {
+		{
+			desc: "should support wildcard match all",
 			podAnnotations: map[string]string{
 				"t.f":  "j",
 				"z.g":  "o",
@@ -427,7 +415,8 @@ func TestPassThroughAnnotationsFilter(t *testing.T) {
 				"y":    "b",
 			},
 		},
-		"should support match including path separator": {
+		{
+			desc: "should support match including path separator",
 			podAnnotations: map[string]string{
 				"matchend.com/end":    "1",
 				"matchend.com/end1":   "2",
@@ -486,7 +475,8 @@ func TestPassThroughAnnotationsFilter(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			passthroughAnnotations := getPassthroughAnnotations(test.podAnnotations, test.runtimePodAnnotations)
 			assert.Equal(t, test.passthroughAnnotations, passthroughAnnotations)
 		})
@@ -574,28 +564,34 @@ func TestValidateTargetContainer(t *testing.T) {
 	err = addContainer(c, testOtherContainerID, testOtherContainerSandboxID, testOtherContainerPID, createdAt, startedAt, 0)
 	require.NoError(t, err, "error creating test container in other pod")
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc              string
 		targetContainerID string
 		expectError       bool
 	}{
-		"target container in pod": {
+		{
+			desc:              "target container in pod",
 			targetContainerID: testTargetContainerID,
 			expectError:       false,
 		},
-		"target stopped container in pod": {
+		{
+			desc:              "target stopped container in pod",
 			targetContainerID: testStoppedContainerID,
 			expectError:       true,
 		},
-		"target container does not exist": {
+		{
+			desc:              "target container does not exist",
 			targetContainerID: "no-container-with-this-id",
 			expectError:       true,
 		},
-		"target container in other pod": {
+		{
+			desc:              "target container in other pod",
 			targetContainerID: testOtherContainerID,
 			expectError:       true,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			targetContainer, err := c.validateTargetContainer(testSandboxID, test.targetContainerID)
 			if test.expectError {
 				require.Error(t, err, "target should have been invalid but no error")
@@ -657,6 +653,7 @@ func TestHostNetwork(t *testing.T) {
 		if goruntime.GOOS != "linux" {
 			t.Skip()
 		}
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			if hostNetwork(tt.c) != tt.expected {
 				t.Errorf("failed hostNetwork got %t expected %t", hostNetwork(tt.c), tt.expected)

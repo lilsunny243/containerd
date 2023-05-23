@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/containerd/containerd/log"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/containerd/containerd"
@@ -41,8 +41,6 @@ import (
 // CRIService interface contains things required by controller, but not yet refactored from criService.
 // TODO: this will be removed in subsequent iterations.
 type CRIService interface {
-	EnsureImageExists(ctx context.Context, ref string, config *runtime.PodSandboxConfig) (*imagestore.Image, error)
-
 	// TODO: we should implement Event backoff in Controller.
 	BackOffEvent(id string, event interface{})
 
@@ -51,11 +49,21 @@ type CRIService interface {
 	GenerateAndSendContainerEvent(ctx context.Context, containerID string, sandboxID string, eventType runtime.ContainerEventType)
 }
 
+// ImageService specifies dependencies to CRI image service.
+type ImageService interface {
+	runtime.ImageServiceServer
+
+	LocalResolve(refOrID string) (imagestore.Image, error)
+	GetImage(id string) (imagestore.Image, error)
+}
+
 type Controller struct {
 	// config contains all configurations.
 	config criconfig.Config
 	// client is an instance of the containerd client
 	client *containerd.Client
+	// imageService is a dependency to CRI image service.
+	imageService ImageService
 	// sandboxStore stores all resources associated with sandboxes.
 	sandboxStore *sandboxstore.Store
 	// os is an interface for all required os operations.
@@ -74,11 +82,13 @@ func New(
 	sandboxStore *sandboxstore.Store,
 	os osinterface.OS,
 	cri CRIService,
+	imageService ImageService,
 	baseOCISpecs map[string]*oci.Spec,
 ) *Controller {
 	return &Controller{
 		config:       config,
 		client:       client,
+		imageService: imageService,
 		sandboxStore: sandboxStore,
 		os:           os,
 		cri:          cri,
@@ -112,11 +122,11 @@ func (c *Controller) waitSandboxExit(ctx context.Context, id string, exitCh <-ch
 	exitedAt = time.Now()
 	select {
 	case exitRes := <-exitCh:
-		logrus.Debugf("received sandbox exit %+v", exitRes)
+		log.G(ctx).Debugf("received sandbox exit %+v", exitRes)
 
 		exitStatus, exitedAt, err = exitRes.Result()
 		if err != nil {
-			logrus.WithError(err).Errorf("failed to get task exit status for %q", id)
+			log.G(ctx).WithError(err).Errorf("failed to get task exit status for %q", id)
 			exitStatus = unknownExitCode
 			exitedAt = time.Now()
 		}
@@ -138,7 +148,7 @@ func (c *Controller) waitSandboxExit(ctx context.Context, id string, exitCh <-ch
 			return nil
 		}()
 		if err != nil {
-			logrus.WithError(err).Errorf("failed to handle sandbox TaskExit %s", id)
+			log.G(ctx).WithError(err).Errorf("failed to handle sandbox TaskExit %s", id)
 			// Don't backoff, the caller is responsible for.
 			return
 		}

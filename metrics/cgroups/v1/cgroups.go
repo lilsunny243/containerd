@@ -28,9 +28,7 @@ import (
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/runtime"
-	"github.com/containerd/containerd/runtime/v1/linux"
 	"github.com/docker/go-metrics"
-	"github.com/sirupsen/logrus"
 )
 
 // NewTaskMonitor returns a new cgroups monitor
@@ -55,11 +53,15 @@ type cgroupsMonitor struct {
 	publisher events.Publisher
 }
 
+type cgroupTask interface {
+	Cgroup() (cgroups.Cgroup, error)
+}
+
 func (m *cgroupsMonitor) Monitor(c runtime.Task, labels map[string]string) error {
 	if err := m.collector.Add(c, labels); err != nil {
 		return err
 	}
-	t, ok := c.(*linux.Task)
+	t, ok := c.(cgroupTask)
 	if !ok {
 		return nil
 	}
@@ -72,7 +74,7 @@ func (m *cgroupsMonitor) Monitor(c runtime.Task, labels map[string]string) error
 	}
 	err = m.oom.Add(c.ID(), c.Namespace(), cg, m.trigger)
 	if err == cgroups.ErrMemoryNotSupported {
-		logrus.WithError(err).Warn("OOM monitoring failed")
+		log.L.WithError(err).Warn("OOM monitoring failed")
 		return nil
 	}
 	return err

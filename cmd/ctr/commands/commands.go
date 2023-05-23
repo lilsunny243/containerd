@@ -32,7 +32,7 @@ var (
 	SnapshotterFlags = []cli.Flag{
 		cli.StringFlag{
 			Name:   "snapshotter",
-			Usage:  "snapshotter name. Empty value stands for the default value.",
+			Usage:  "Snapshotter name. Empty value stands for the default value.",
 			EnvVar: "CONTAINERD_SNAPSHOTTER",
 		},
 	}
@@ -140,6 +140,10 @@ var (
 			Name:  "runtime",
 			Usage: "Runtime name or absolute path to runtime binary",
 			Value: defaults.DefaultRuntime,
+		},
+		cli.StringFlag{
+			Name:  "sandbox",
+			Usage: "Create the container in the given sandbox",
 		},
 		cli.StringFlag{
 			Name:  "runtime-config-path",

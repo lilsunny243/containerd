@@ -25,18 +25,18 @@ import (
 	"github.com/containerd/console"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cmd/ctr/commands"
+	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/oci"
 	"github.com/containerd/containerd/pkg/netns"
 	"github.com/containerd/containerd/snapshots"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
 
 var platformRunFlags = []cli.Flag{
 	cli.BoolFlag{
 		Name:  "isolated",
-		Usage: "run the container with vm isolation",
+		Usage: "Run the container with vm isolation",
 	},
 }
 
@@ -50,6 +50,10 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 
 		config = context.IsSet("config")
 	)
+
+	if sandbox := context.String("sandbox"); sandbox != "" {
+		cOpts = append(cOpts, containerd.WithSandbox(sandbox))
+	}
 
 	if config {
 		id = context.Args().First()
@@ -118,7 +122,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			con := console.Current()
 			size, err := con.Size()
 			if err != nil {
-				logrus.WithError(err).Error("console size")
+				log.L.WithError(err).Error("console size")
 			}
 			opts = append(opts, oci.WithTTYSize(int(size.Width), int(size.Height)))
 		}
@@ -131,8 +135,6 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 				return nil, err
 			}
 			opts = append(opts, oci.WithWindowsNetworkNamespace(ns.GetPath()))
-			cniMeta := &commands.NetworkMetaData{EnableCni: true}
-			cOpts = append(cOpts, containerd.WithContainerExtension(commands.CtrCniMetadataExtension, cniMeta))
 		}
 		if context.Bool("isolated") {
 			opts = append(opts, oci.WithWindowsHyperV)
@@ -165,6 +167,11 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		}
 	}
 
+	if context.Bool("cni") {
+		cniMeta := &commands.NetworkMetaData{EnableCni: true}
+		cOpts = append(cOpts, containerd.WithContainerExtension(commands.CtrCniMetadataExtension, cniMeta))
+	}
+
 	runtime := context.String("runtime")
 	var runtimeOpts interface{}
 	if runtime == "io.containerd.runhcs.v1" {
@@ -180,10 +187,6 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 	cOpts = append(cOpts, spec)
 
 	return client.NewContainer(ctx, id, cOpts...)
-}
-
-func getNewTaskOpts(_ *cli.Context) []containerd.NewTaskOpts {
-	return nil
 }
 
 func getNetNSPath(ctx gocontext.Context, t containerd.Task) (string, error) {

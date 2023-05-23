@@ -31,7 +31,6 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/davecgh/go-spew/spew"
 	selinux "github.com/opencontainers/selinux/go-selinux"
-	"github.com/sirupsen/logrus"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/containerd/containerd"
@@ -352,7 +351,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 	log.G(ctx).Tracef("Create sandbox container (id=%q, name=%q).",
 		id, name)
 
-	taskOpts := c.taskOpts(ociRuntime.Type)
+	var taskOpts []containerd.NewTaskOpts
 	if ociRuntime.Path != "" {
 		taskOpts = append(taskOpts, containerd.WithRuntimePath(ociRuntime.Path))
 	}
@@ -765,7 +764,7 @@ func (c *criService) getSandboxRuntime(config *runtime.PodSandboxConfig, runtime
 }
 
 func logDebugCNIResult(ctx context.Context, sandboxID string, result *cni.Result) {
-	if logrus.GetLevel() < logrus.DebugLevel {
+	if log.GetLevel() < log.DebugLevel {
 		return
 	}
 	cniResult, err := json.Marshal(result)

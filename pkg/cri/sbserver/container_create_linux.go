@@ -51,91 +51,19 @@ const (
 	seccompDefaultProfile = dockerDefault
 )
 
-// containerMounts sets up necessary container system file mounts
-// including /dev/shm, /etc/hosts and /etc/resolv.conf.
-func (c *criService) containerMounts(sandboxID string, config *runtime.ContainerConfig) []*runtime.Mount {
-	var mounts []*runtime.Mount
-	securityContext := config.GetLinux().GetSecurityContext()
-	if !isInCRIMounts(etcHostname, config.GetMounts()) {
-		// /etc/hostname is added since 1.1.6, 1.2.4 and 1.3.
-		// For in-place upgrade, the old sandbox doesn't have the hostname file,
-		// do not mount this in that case.
-		// TODO(random-liu): Remove the check and always mount this when
-		// containerd 1.1 and 1.2 are deprecated.
-		hostpath := c.getSandboxHostname(sandboxID)
-		if _, err := c.os.Stat(hostpath); err == nil {
-			mounts = append(mounts, &runtime.Mount{
-				ContainerPath:  etcHostname,
-				HostPath:       hostpath,
-				Readonly:       securityContext.GetReadonlyRootfs(),
-				SelinuxRelabel: true,
-			})
-		}
-	}
-
-	if !isInCRIMounts(etcHosts, config.GetMounts()) {
-		mounts = append(mounts, &runtime.Mount{
-			ContainerPath:  etcHosts,
-			HostPath:       c.getSandboxHosts(sandboxID),
-			Readonly:       securityContext.GetReadonlyRootfs(),
-			SelinuxRelabel: true,
-		})
-	}
-
-	// Mount sandbox resolv.config.
-	// TODO: Need to figure out whether we should always mount it as read-only
-	if !isInCRIMounts(resolvConfPath, config.GetMounts()) {
-		mounts = append(mounts, &runtime.Mount{
-			ContainerPath:  resolvConfPath,
-			HostPath:       c.getResolvPath(sandboxID),
-			Readonly:       securityContext.GetReadonlyRootfs(),
-			SelinuxRelabel: true,
-		})
-	}
-
-	if !isInCRIMounts(devShm, config.GetMounts()) {
-		sandboxDevShm := c.getSandboxDevShm(sandboxID)
-		if securityContext.GetNamespaceOptions().GetIpc() == runtime.NamespaceMode_NODE {
-			sandboxDevShm = devShm
-		}
-		mounts = append(mounts, &runtime.Mount{
-			ContainerPath:  devShm,
-			HostPath:       sandboxDevShm,
-			Readonly:       false,
-			SelinuxRelabel: sandboxDevShm != devShm,
-		})
-	}
-	return mounts
-}
-
 func (c *criService) containerSpecOpts(config *runtime.ContainerConfig, imageConfig *imagespec.ImageConfig) ([]oci.SpecOpts, error) {
-	var specOpts []oci.SpecOpts
+	var (
+		specOpts []oci.SpecOpts
+		err      error
+	)
 	securityContext := config.GetLinux().GetSecurityContext()
-	// Set container username. This could only be done by containerd, because it needs
-	// access to the container rootfs. Pass user name to containerd, and let it overwrite
-	// the spec for us.
-	userstr, err := generateUserString(
-		securityContext.GetRunAsUsername(),
-		securityContext.GetRunAsUser(),
-		securityContext.GetRunAsGroup())
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate user string: %w", err)
-	}
-	if userstr == "" {
-		// Lastly, since no user override was passed via CRI try to set via OCI
-		// Image
-		userstr = imageConfig.User
-	}
-	if userstr != "" {
-		specOpts = append(specOpts, oci.WithUser(userstr))
-	}
-
+	userstr := "0" // runtime default
 	if securityContext.GetRunAsUsername() != "" {
 		userstr = securityContext.GetRunAsUsername()
-	} else {
-		// Even if RunAsUser is not set, we still call `GetValue` to get uid 0.
-		// Because it is still useful to get additional gids for uid 0.
+	} else if securityContext.GetRunAsUser() != nil {
 		userstr = strconv.FormatInt(securityContext.GetRunAsUser().GetValue(), 10)
+	} else if imageConfig.User != "" {
+		userstr, _, _ = strings.Cut(imageConfig.User, ":")
 	}
 	specOpts = append(specOpts, customopts.WithAdditionalGIDs(userstr),
 		customopts.WithSupplementalGroups(securityContext.GetSupplementalGroups()))
@@ -178,7 +106,7 @@ func (c *criService) containerSpecOpts(config *runtime.ContainerConfig, imageCon
 		specOpts = append(specOpts, seccompSpecOpts)
 	}
 	if c.config.EnableCDI {
-		specOpts = append(specOpts, customopts.WithCDI(config.Annotations))
+		specOpts = append(specOpts, customopts.WithCDI(config.Annotations, config.CDIDevices))
 	}
 	return specOpts, nil
 }
@@ -333,44 +261,6 @@ func appArmorProfileExists(profile string) (bool, error) {
 			return false, err
 		}
 	}
-}
-
-// generateUserString generates valid user string based on OCI Image Spec
-// v1.0.0.
-//
-// CRI defines that the following combinations are valid:
-//
-// (none) -> ""
-// username -> username
-// username, uid -> username
-// username, uid, gid -> username:gid
-// username, gid -> username:gid
-// uid -> uid
-// uid, gid -> uid:gid
-// gid -> error
-//
-// TODO(random-liu): Add group name support in CRI.
-func generateUserString(username string, uid, gid *runtime.Int64Value) (string, error) {
-	var userstr, groupstr string
-	if uid != nil {
-		userstr = strconv.FormatInt(uid.GetValue(), 10)
-	}
-	if username != "" {
-		userstr = username
-	}
-	if gid != nil {
-		groupstr = strconv.FormatInt(gid.GetValue(), 10)
-	}
-	if userstr == "" {
-		if groupstr != "" {
-			return "", fmt.Errorf("user group %q is specified without user", groupstr)
-		}
-		return "", nil
-	}
-	if groupstr != "" {
-		userstr = userstr + ":" + groupstr
-	}
-	return userstr, nil
 }
 
 // snapshotterOpts returns any Linux specific snapshotter options for the rootfs snapshot

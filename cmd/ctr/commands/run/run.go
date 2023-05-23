@@ -30,10 +30,10 @@ import (
 	"github.com/containerd/containerd/cmd/ctr/commands/tasks"
 	"github.com/containerd/containerd/containers"
 	clabels "github.com/containerd/containerd/labels"
+	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/oci"
 	gocni "github.com/containerd/go-cni"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
 
@@ -87,7 +87,7 @@ func parseMountFlag(m string) (specs.Mount, error) {
 // Command runs a container
 var Command = cli.Command{
 	Name:           "run",
-	Usage:          "run a container",
+	Usage:          "Run a container",
 	ArgsUsage:      "[flags] Image|RootFS ID [COMMAND] [ARG...]",
 	SkipArgReorder: true,
 	Flags: append([]cli.Flag{
@@ -164,6 +164,7 @@ var Command = cli.Command{
 			return err
 		}
 		defer cancel()
+
 		container, err := NewContainer(ctx, client, context)
 		if err != nil {
 			return err
@@ -186,7 +187,7 @@ var Command = cli.Command{
 			}
 		}
 
-		opts := getNewTaskOpts(context)
+		opts := tasks.GetNewTaskOpts(context)
 		ioOpts := []cio.Opt{cio.WithFIFODir(context.String("fifo-dir"))}
 		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
 		if err != nil {
@@ -198,7 +199,7 @@ var Command = cli.Command{
 			defer func() {
 				if enableCNI {
 					if err := network.Remove(ctx, commands.FullID(ctx, container), ""); err != nil {
-						logrus.WithError(err).Error("network review")
+						log.L.WithError(err).Error("network review")
 					}
 				}
 				task.Delete(ctx)
@@ -231,7 +232,7 @@ var Command = cli.Command{
 		}
 		if tty {
 			if err := tasks.HandleConsoleResize(ctx, task, con); err != nil {
-				logrus.WithError(err).Error("console resize")
+				log.L.WithError(err).Error("console resize")
 			}
 		} else {
 			sigc := commands.ForwardAllSignals(ctx, task)
@@ -261,7 +262,7 @@ func buildLabels(cmdLabels, imageLabels map[string]string) map[string]string {
 		} else {
 			// In case the image label is invalid, we output a warning and skip adding it to the
 			// container.
-			logrus.WithError(err).Warnf("unable to add image label with key %s to the container", k)
+			log.L.WithError(err).Warnf("unable to add image label with key %s to the container", k)
 		}
 	}
 	// labels from the command line will override image and the initial image config labels

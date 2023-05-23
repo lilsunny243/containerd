@@ -20,6 +20,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/containerd/typeurl/v2"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/containerd/containerd/api/types"
 	transfertypes "github.com/containerd/containerd/api/types/transfer"
 	"github.com/containerd/containerd/content"
@@ -31,8 +34,6 @@ import (
 	"github.com/containerd/containerd/pkg/transfer/plugins"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/remotes"
-	"github.com/containerd/typeurl/v2"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func init() {
@@ -129,7 +130,7 @@ func WithNamedPrefix(name string, allowOverwrite bool) StoreOpt {
 	}
 }
 
-// WithNamedPrefix uses a named prefix to references images which only have a tag name
+// WithDigestRef uses a named prefix to references images which only have a tag name
 // reference in the annotation or check full references annotations against and
 // additionally may add a digest reference. Images with no references resolved
 // from matching annotations may be stored by digest.
@@ -325,6 +326,28 @@ func (is *Store) Get(ctx context.Context, store images.Store) (images.Image, err
 	return store.Get(ctx, is.imageName)
 }
 
+func (is *Store) Lookup(ctx context.Context, store images.Store) ([]images.Image, error) {
+	var imgs []images.Image
+	if is.imageName != "" {
+		img, err := store.Get(ctx, is.imageName)
+		if err != nil {
+			return nil, err
+		}
+		imgs = append(imgs, img)
+	}
+	for _, ref := range is.extraReferences {
+		if ref.IsPrefix {
+			return nil, fmt.Errorf("prefix lookup on export not implemented: %w", errdefs.ErrNotImplemented)
+		}
+		img, err := store.Get(ctx, ref.Name)
+		if err != nil {
+			return nil, err
+		}
+		imgs = append(imgs, img)
+	}
+	return imgs, nil
+}
+
 func (is *Store) UnpackPlatforms() []transfer.UnpackConfiguration {
 	unpacks := make([]transfer.UnpackConfiguration, len(is.unpacks))
 	for i, uc := range is.unpacks {
@@ -335,7 +358,6 @@ func (is *Store) UnpackPlatforms() []transfer.UnpackConfiguration {
 }
 
 func (is *Store) MarshalAny(context.Context, streaming.StreamCreator) (typeurl.Any, error) {
-	//unpack.Platform
 	s := &transfertypes.ImageStore{
 		Name:            is.imageName,
 		Labels:          is.imageLabels,

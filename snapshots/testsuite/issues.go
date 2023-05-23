@@ -19,6 +19,7 @@ package testsuite
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,9 @@ func checkRemoveDirectoryInLowerLayer(ctx context.Context, t *testing.T, sn snap
 // See https://github.com/docker/docker/issues/24913 overlay
 // see https://github.com/docker/docker/issues/28391 overlay2
 func checkChown(ctx context.Context, t *testing.T, sn snapshots.Snapshotter, work string) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Chown is not supported on Windows")
+	}
 	l1Init := fstest.Apply(
 		fstest.CreateDir("/opt", 0700),
 		fstest.CreateDir("/opt/a", 0700),
@@ -124,10 +128,16 @@ func checkRename(ss string) func(ctx context.Context, t *testing.T, sn snapshots
 		)
 
 		var applier []fstest.Applier
-		if ss != "overlayfs" {
-			// With neither OVERLAY_FS_REDIRECT_DIR nor redirect_dir,
-			// renaming the directory on the lower directory doesn't work on overlayfs.
-			// https://github.com/torvalds/linux/blob/v5.18/Documentation/filesystems/overlayfs.rst#renaming-directories
+		switch ss {
+		// With neither OVERLAY_FS_REDIRECT_DIR nor redirect_dir,
+		// renaming the directory on the lower directory doesn't work on overlayfs.
+		// https://github.com/torvalds/linux/blob/v5.18/Documentation/filesystems/overlayfs.rst#renaming-directories
+		//
+		// It doesn't work on fuse-overlayfs either.
+		// https://github.com/containerd/fuse-overlayfs-snapshotter/pull/53#issuecomment-1543442048
+		case "overlayfs", "fuse-overlayfs":
+			// NOP
+		default:
 			applier = append(applier, fstest.Rename("/dir1", "/dir2"))
 		}
 		applier = append(
@@ -147,6 +157,9 @@ func checkRename(ss string) func(ctx context.Context, t *testing.T, sn snapshots
 // checkDirectoryPermissionOnCommit
 // https://github.com/docker/docker/issues/27298
 func checkDirectoryPermissionOnCommit(ctx context.Context, t *testing.T, sn snapshots.Snapshotter, work string) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Chown is not supported on WCOW")
+	}
 	l1Init := fstest.Apply(
 		fstest.CreateDir("/dir1", 0700),
 		fstest.CreateDir("/dir2", 0700),

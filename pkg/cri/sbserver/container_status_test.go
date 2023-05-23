@@ -18,9 +18,12 @@ package sbserver
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	criconfig "github.com/containerd/containerd/pkg/cri/config"
+	snapshotstore "github.com/containerd/containerd/pkg/cri/store/snapshot"
 	"github.com/stretchr/testify/assert"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
@@ -85,7 +88,8 @@ func getContainerStatusTestData() (*containerstore.Metadata, *containerstore.Sta
 }
 
 func TestToCRIContainerStatus(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc           string
 		startedAt      int64
 		finishedAt     int64
 		exitCode       int32
@@ -94,14 +98,17 @@ func TestToCRIContainerStatus(t *testing.T) {
 		expectedState  runtime.ContainerState
 		expectedReason string
 	}{
-		"container created": {
+		{
+			desc:          "container created",
 			expectedState: runtime.ContainerState_CONTAINER_CREATED,
 		},
-		"container running": {
+		{
+			desc:          "container running",
 			startedAt:     time.Now().UnixNano(),
 			expectedState: runtime.ContainerState_CONTAINER_RUNNING,
 		},
-		"container exited with reason": {
+		{
+			desc:           "container exited with reason",
 			startedAt:      time.Now().UnixNano(),
 			finishedAt:     time.Now().UnixNano(),
 			exitCode:       1,
@@ -110,7 +117,8 @@ func TestToCRIContainerStatus(t *testing.T) {
 			expectedState:  runtime.ContainerState_CONTAINER_EXITED,
 			expectedReason: "test-reason",
 		},
-		"container exited with exit code 0 without reason": {
+		{
+			desc:           "container exited with exit code 0 without reason",
 			startedAt:      time.Now().UnixNano(),
 			finishedAt:     time.Now().UnixNano(),
 			exitCode:       0,
@@ -118,7 +126,8 @@ func TestToCRIContainerStatus(t *testing.T) {
 			expectedState:  runtime.ContainerState_CONTAINER_EXITED,
 			expectedReason: completeExitReason,
 		},
-		"container exited with non-zero exit code without reason": {
+		{
+			desc:           "container exited with non-zero exit code without reason",
 			startedAt:      time.Now().UnixNano(),
 			finishedAt:     time.Now().UnixNano(),
 			exitCode:       1,
@@ -127,7 +136,8 @@ func TestToCRIContainerStatus(t *testing.T) {
 			expectedReason: errorExitReason,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 
 			metadata, status, _, expected := getContainerStatusTestData()
 			// Update status with test case.
@@ -151,7 +161,7 @@ func TestToCRIContainerStatus(t *testing.T) {
 			containerStatus := toCRIContainerStatus(container,
 				expected.Image,
 				expected.ImageRef)
-			assert.Equal(t, expected, containerStatus, desc)
+			assert.Equal(t, expected, containerStatus, test.desc)
 		})
 	}
 }
@@ -173,7 +183,8 @@ func TestToCRIContainerInfo(t *testing.T) {
 }
 
 func TestContainerStatus(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc          string
 		exist         bool
 		imageExist    bool
 		startedAt     int64
@@ -182,18 +193,21 @@ func TestContainerStatus(t *testing.T) {
 		expectedState runtime.ContainerState
 		expectErr     bool
 	}{
-		"container created": {
+		{
+			desc:          "container created",
 			exist:         true,
 			imageExist:    true,
 			expectedState: runtime.ContainerState_CONTAINER_CREATED,
 		},
-		"container running": {
+		{
+			desc:          "container running",
 			exist:         true,
 			imageExist:    true,
 			startedAt:     time.Now().UnixNano(),
 			expectedState: runtime.ContainerState_CONTAINER_RUNNING,
 		},
-		"container exited": {
+		{
+			desc:          "container exited",
 			exist:         true,
 			imageExist:    true,
 			startedAt:     time.Now().UnixNano(),
@@ -201,18 +215,21 @@ func TestContainerStatus(t *testing.T) {
 			reason:        "test-reason",
 			expectedState: runtime.ContainerState_CONTAINER_EXITED,
 		},
-		"container not exist": {
+		{
+			desc:       "container not exist",
 			exist:      false,
 			imageExist: true,
 			expectErr:  true,
 		},
-		"image not exist": {
+		{
+			desc:       "image not exist",
 			exist:      false,
 			imageExist: false,
 			expectErr:  true,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			c := newTestCRIService()
 			metadata, status, image, expected := getContainerStatusTestData()
 			// Update status with test case.
@@ -228,8 +245,9 @@ func TestContainerStatus(t *testing.T) {
 				assert.NoError(t, c.containerStore.Add(container))
 			}
 			if test.imageExist {
-				c.imageStore, err = imagestore.NewFakeStore([]imagestore.Image{*image})
+				imageStore, err := imagestore.NewFakeStore([]imagestore.Image{*image})
 				assert.NoError(t, err)
+				c.imageService = &fakeImageService{imageStore: imageStore}
 			}
 			resp, err := c.ContainerStatus(context.Background(), &runtime.ContainerStatusRequest{ContainerId: container.ID})
 			if test.expectErr {
@@ -245,6 +263,27 @@ func TestContainerStatus(t *testing.T) {
 			assert.Equal(t, expected, resp.GetStatus())
 		})
 	}
+}
+
+type fakeImageService struct {
+	runtime.ImageServiceServer
+	imageStore *imagestore.Store
+}
+
+func (s *fakeImageService) RuntimeSnapshotter(ctx context.Context, ociRuntime criconfig.Runtime) string {
+	return ""
+}
+
+func (s *fakeImageService) UpdateImage(ctx context.Context, r string) error { return nil }
+
+func (s *fakeImageService) GetImage(id string) (imagestore.Image, error) { return s.imageStore.Get(id) }
+
+func (s *fakeImageService) GetSnapshot(key string) (snapshotstore.Snapshot, error) {
+	return snapshotstore.Snapshot{}, errors.New("not implemented")
+}
+
+func (s *fakeImageService) LocalResolve(refOrID string) (imagestore.Image, error) {
+	return imagestore.Image{}, errors.New("not implemented")
 }
 
 func patchExceptedWithState(expected *runtime.ContainerStatus, state runtime.ContainerState) {

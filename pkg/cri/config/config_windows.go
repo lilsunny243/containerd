@@ -38,7 +38,6 @@ func DefaultConfig() PluginConfig {
 		ContainerdConfig: ContainerdConfig{
 			Snapshotter:        containerd.DefaultSnapshotter,
 			DefaultRuntimeName: "runhcs-wcow-process",
-			NoPivot:            false,
 			Runtimes: map[string]Runtime{
 				"runhcs-wcow-process": {
 					Type:                 "io.containerd.runhcs.v1",
@@ -86,5 +85,6 @@ func DefaultConfig() PluginConfig {
 			KeyModel: KeyModelNode,
 		},
 		ImagePullProgressTimeout: time.Minute.String(),
+		DrainExecSyncIOTimeout:   "0s",
 	}
 }

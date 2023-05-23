@@ -23,13 +23,13 @@ import (
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/cmd/ctr/commands"
-	"github.com/sirupsen/logrus"
+	"github.com/containerd/containerd/log"
 	"github.com/urfave/cli"
 )
 
 var startCommand = cli.Command{
 	Name:      "start",
-	Usage:     "start a container that has been created",
+	Usage:     "Start a container that has been created",
 	ArgsUsage: "CONTAINER",
 	Flags: append(platformStartFlags, []cli.Flag{
 		cli.BoolFlag{
@@ -78,7 +78,7 @@ var startCommand = cli.Command{
 		}
 		var (
 			tty    = spec.Process.Terminal
-			opts   = getNewTaskOpts(context)
+			opts   = GetNewTaskOpts(context)
 			ioOpts = []cio.Opt{cio.WithFIFODir(context.String("fifo-dir"))}
 		)
 		var con console.Console
@@ -115,7 +115,7 @@ var startCommand = cli.Command{
 		}
 		if tty {
 			if err := HandleConsoleResize(ctx, task, con); err != nil {
-				logrus.WithError(err).Error("console resize")
+				log.L.WithError(err).Error("console resize")
 			}
 		} else {
 			sigc := commands.ForwardAllSignals(ctx, task)

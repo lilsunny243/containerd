@@ -18,7 +18,6 @@ package sbserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +31,7 @@ import (
 	"github.com/containerd/containerd/contrib/seccomp"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/oci"
+	"github.com/containerd/containerd/platforms"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux"
@@ -199,12 +199,14 @@ func TestContainerCapabilities(t *testing.T) {
 	testContainerName := "container-name"
 	testPid := uint32(1234)
 	allCaps := cap.Known()
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc       string
 		capability *runtime.Capability
 		includes   []string
 		excludes   []string
 	}{
-		"should be able to add/drop capabilities": {
+		{
+			desc: "should be able to add/drop capabilities",
 			capability: &runtime.Capability{
 				AddCapabilities:  []string{"SYS_ADMIN"},
 				DropCapabilities: []string{"CHOWN"},
@@ -212,19 +214,22 @@ func TestContainerCapabilities(t *testing.T) {
 			includes: []string{"CAP_SYS_ADMIN"},
 			excludes: []string{"CAP_CHOWN"},
 		},
-		"should be able to add all capabilities": {
+		{
+			desc: "should be able to add all capabilities",
 			capability: &runtime.Capability{
 				AddCapabilities: []string{"ALL"},
 			},
 			includes: allCaps,
 		},
-		"should be able to drop all capabilities": {
+		{
+			desc: "should be able to drop all capabilities",
 			capability: &runtime.Capability{
 				DropCapabilities: []string{"ALL"},
 			},
 			excludes: allCaps,
 		},
-		"should be able to drop capabilities with add all": {
+		{
+			desc: "should be able to drop capabilities with add all",
 			capability: &runtime.Capability{
 				AddCapabilities:  []string{"ALL"},
 				DropCapabilities: []string{"CHOWN"},
@@ -232,7 +237,8 @@ func TestContainerCapabilities(t *testing.T) {
 			includes: util.SubtractStringSlice(allCaps, "CAP_CHOWN"),
 			excludes: []string{"CAP_CHOWN"},
 		},
-		"should be able to add capabilities with drop all": {
+		{
+			desc: "should be able to add capabilities with drop all",
 			capability: &runtime.Capability{
 				AddCapabilities:  []string{"SYS_ADMIN"},
 				DropCapabilities: []string{"ALL"},
@@ -241,7 +247,8 @@ func TestContainerCapabilities(t *testing.T) {
 			excludes: util.SubtractStringSlice(allCaps, "CAP_SYS_ADMIN"),
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			containerConfig, sandboxConfig, imageConfig, specCheck := getCreateContainerTestData()
 			ociRuntime := config.Runtime{}
 			c := newTestCRIService()
@@ -360,23 +367,16 @@ func TestContainerSpecWithExtraMounts(t *testing.T) {
 			HostPath:      "test-sys-extra",
 			Readonly:      false,
 		},
-		{
-			ContainerPath: "/dev",
-			HostPath:      "test-dev-extra",
-			Readonly:      false,
-		},
 	}
 	spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName, containerConfig, sandboxConfig, imageConfig, extraMounts, ociRuntime)
 	require.NoError(t, err)
 	specCheck(t, testID, testSandboxID, testPid, spec)
-	var mounts, sysMounts, devMounts []runtimespec.Mount
+	var mounts, sysMounts []runtimespec.Mount
 	for _, m := range spec.Mounts {
 		if strings.HasPrefix(m.Destination, "test-container-path") {
 			mounts = append(mounts, m)
 		} else if m.Destination == "/sys" {
 			sysMounts = append(sysMounts, m)
-		} else if strings.HasPrefix(m.Destination, "/dev") {
-			devMounts = append(devMounts, m)
 		}
 	}
 	t.Logf("CRI mount should override extra mount")
@@ -388,11 +388,6 @@ func TestContainerSpecWithExtraMounts(t *testing.T) {
 	require.Len(t, sysMounts, 1)
 	assert.Equal(t, "test-sys-extra", sysMounts[0].Source)
 	assert.Contains(t, sysMounts[0].Options, "rw")
-
-	t.Logf("Dev mount should override all default dev mounts")
-	require.Len(t, devMounts, 1)
-	assert.Equal(t, "test-dev-extra", devMounts[0].Source)
-	assert.Contains(t, devMounts[0].Options, "rw")
 }
 
 func TestContainerAndSandboxPrivileged(t *testing.T) {
@@ -403,33 +398,39 @@ func TestContainerAndSandboxPrivileged(t *testing.T) {
 	containerConfig, sandboxConfig, imageConfig, _ := getCreateContainerTestData()
 	ociRuntime := config.Runtime{}
 	c := newTestCRIService()
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc                string
 		containerPrivileged bool
 		sandboxPrivileged   bool
 		expectError         bool
 	}{
-		"privileged container in non-privileged sandbox should fail": {
+		{
+			desc:                "privileged container in non-privileged sandbox should fail",
 			containerPrivileged: true,
 			sandboxPrivileged:   false,
 			expectError:         true,
 		},
-		"privileged container in privileged sandbox should be fine": {
+		{
+			desc:                "privileged container in privileged sandbox should be fine",
 			containerPrivileged: true,
 			sandboxPrivileged:   true,
 			expectError:         false,
 		},
-		"non-privileged container in privileged sandbox should be fine": {
+		{
+			desc:                "non-privileged container in privileged sandbox should be fine",
 			containerPrivileged: false,
 			sandboxPrivileged:   true,
 			expectError:         false,
 		},
-		"non-privileged container in non-privileged sandbox should be fine": {
+		{
+			desc:                "non-privileged container in non-privileged sandbox should be fine",
 			containerPrivileged: false,
 			sandboxPrivileged:   false,
 			expectError:         false,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			containerConfig.Linux.SecurityContext.Privileged = test.containerPrivileged
 			sandboxConfig.Linux.SecurityContext = &runtime.LinuxSandboxSecurityContext{
 				Privileged: test.sandboxPrivileged,
@@ -444,173 +445,6 @@ func TestContainerAndSandboxPrivileged(t *testing.T) {
 	}
 }
 
-func TestContainerMounts(t *testing.T) {
-	const testSandboxID = "test-id"
-	for desc, test := range map[string]struct {
-		statFn          func(string) (os.FileInfo, error)
-		criMounts       []*runtime.Mount
-		securityContext *runtime.LinuxContainerSecurityContext
-		expectedMounts  []*runtime.Mount
-	}{
-		"should setup ro mount when rootfs is read-only": {
-			securityContext: &runtime.LinuxContainerSecurityContext{
-				ReadonlyRootfs: true,
-			},
-			expectedMounts: []*runtime.Mount{
-				{
-					ContainerPath:  "/etc/hostname",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hostname"),
-					Readonly:       true,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  "/etc/hosts",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hosts"),
-					Readonly:       true,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  resolvConfPath,
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "resolv.conf"),
-					Readonly:       true,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  "/dev/shm",
-					HostPath:       filepath.Join(testStateDir, sandboxesDir, testSandboxID, "shm"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-			},
-		},
-		"should setup rw mount when rootfs is read-write": {
-			securityContext: &runtime.LinuxContainerSecurityContext{},
-			expectedMounts: []*runtime.Mount{
-				{
-					ContainerPath:  "/etc/hostname",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hostname"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  "/etc/hosts",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hosts"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  resolvConfPath,
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "resolv.conf"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  "/dev/shm",
-					HostPath:       filepath.Join(testStateDir, sandboxesDir, testSandboxID, "shm"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-			},
-		},
-		"should use host /dev/shm when host ipc is set": {
-			securityContext: &runtime.LinuxContainerSecurityContext{
-				NamespaceOptions: &runtime.NamespaceOption{Ipc: runtime.NamespaceMode_NODE},
-			},
-			expectedMounts: []*runtime.Mount{
-				{
-					ContainerPath:  "/etc/hostname",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hostname"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  "/etc/hosts",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hosts"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  resolvConfPath,
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "resolv.conf"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath: "/dev/shm",
-					HostPath:      "/dev/shm",
-					Readonly:      false,
-				},
-			},
-		},
-		"should skip container mounts if already mounted by CRI": {
-			criMounts: []*runtime.Mount{
-				{
-					ContainerPath: "/etc/hostname",
-					HostPath:      "/test-etc-hostname",
-				},
-				{
-					ContainerPath: "/etc/hosts",
-					HostPath:      "/test-etc-host",
-				},
-				{
-					ContainerPath: resolvConfPath,
-					HostPath:      "test-resolv-conf",
-				},
-				{
-					ContainerPath: "/dev/shm",
-					HostPath:      "test-dev-shm",
-				},
-			},
-			securityContext: &runtime.LinuxContainerSecurityContext{},
-			expectedMounts:  nil,
-		},
-		"should skip hostname mount if the old sandbox doesn't have hostname file": {
-			statFn: func(path string) (os.FileInfo, error) {
-				assert.Equal(t, filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hostname"), path)
-				return nil, errors.New("random error")
-			},
-			securityContext: &runtime.LinuxContainerSecurityContext{},
-			expectedMounts: []*runtime.Mount{
-				{
-					ContainerPath:  "/etc/hosts",
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "hosts"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  resolvConfPath,
-					HostPath:       filepath.Join(testRootDir, sandboxesDir, testSandboxID, "resolv.conf"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-				{
-					ContainerPath:  "/dev/shm",
-					HostPath:       filepath.Join(testStateDir, sandboxesDir, testSandboxID, "shm"),
-					Readonly:       false,
-					SelinuxRelabel: true,
-				},
-			},
-		},
-	} {
-		t.Run(desc, func(t *testing.T) {
-			config := &runtime.ContainerConfig{
-				Metadata: &runtime.ContainerMetadata{
-					Name:    "test-name",
-					Attempt: 1,
-				},
-				Mounts: test.criMounts,
-				Linux: &runtime.LinuxContainerConfig{
-					SecurityContext: test.securityContext,
-				},
-			}
-			c := newTestCRIService()
-			c.os.(*ostesting.FakeOS).StatFn = test.statFn
-			mounts := c.containerMounts(testSandboxID, config)
-			assert.Equal(t, test.expectedMounts, mounts, desc)
-		})
-	}
-}
-
 func TestPrivilegedBindMount(t *testing.T) {
 	testPid := uint32(1234)
 	c := newTestCRIService()
@@ -619,22 +453,26 @@ func TestPrivilegedBindMount(t *testing.T) {
 	containerConfig, sandboxConfig, imageConfig, _ := getCreateContainerTestData()
 	ociRuntime := config.Runtime{}
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc               string
 		privileged         bool
 		expectedSysFSRO    bool
 		expectedCgroupFSRO bool
 	}{
-		"sysfs and cgroupfs should mount as 'ro' by default": {
+		{
+			desc:               "sysfs and cgroupfs should mount as 'ro' by default",
 			expectedSysFSRO:    true,
 			expectedCgroupFSRO: true,
 		},
-		"sysfs and cgroupfs should not mount as 'ro' if privileged": {
+		{
+			desc:               "sysfs and cgroupfs should not mount as 'ro' if privileged",
 			privileged:         true,
 			expectedSysFSRO:    false,
 			expectedCgroupFSRO: false,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			containerConfig.Linux.SecurityContext.Privileged = test.privileged
 			sandboxConfig.Linux.SecurityContext.Privileged = test.privileged
 
@@ -678,13 +516,15 @@ func TestMountPropagation(t *testing.T) {
 		}, nil
 	}
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc              string
 		criMount          *runtime.Mount
 		fakeLookupMountFn func(string) (mount.Info, error)
 		optionsCheck      []string
 		expectErr         bool
 	}{
-		"HostPath should mount as 'rprivate' if propagation is MountPropagation_PROPAGATION_PRIVATE": {
+		{
+			desc: "HostPath should mount as 'rprivate' if propagation is MountPropagation_PROPAGATION_PRIVATE",
 			criMount: &runtime.Mount{
 				ContainerPath: "container-path",
 				HostPath:      "host-path",
@@ -694,7 +534,8 @@ func TestMountPropagation(t *testing.T) {
 			optionsCheck:      []string{"rbind", "rprivate"},
 			expectErr:         false,
 		},
-		"HostPath should mount as 'rslave' if propagation is MountPropagation_PROPAGATION_HOST_TO_CONTAINER": {
+		{
+			desc: "HostPath should mount as 'rslave' if propagation is MountPropagation_PROPAGATION_HOST_TO_CONTAINER",
 			criMount: &runtime.Mount{
 				ContainerPath: "container-path",
 				HostPath:      "host-path",
@@ -704,7 +545,8 @@ func TestMountPropagation(t *testing.T) {
 			optionsCheck:      []string{"rbind", "rslave"},
 			expectErr:         false,
 		},
-		"HostPath should mount as 'rshared' if propagation is MountPropagation_PROPAGATION_BIDIRECTIONAL": {
+		{
+			desc: "HostPath should mount as 'rshared' if propagation is MountPropagation_PROPAGATION_BIDIRECTIONAL",
 			criMount: &runtime.Mount{
 				ContainerPath: "container-path",
 				HostPath:      "host-path",
@@ -714,7 +556,8 @@ func TestMountPropagation(t *testing.T) {
 			optionsCheck:      []string{"rbind", "rshared"},
 			expectErr:         false,
 		},
-		"HostPath should mount as 'rprivate' if propagation is illegal": {
+		{
+			desc: "HostPath should mount as 'rprivate' if propagation is illegal",
 			criMount: &runtime.Mount{
 				ContainerPath: "container-path",
 				HostPath:      "host-path",
@@ -724,7 +567,8 @@ func TestMountPropagation(t *testing.T) {
 			optionsCheck:      []string{"rbind", "rprivate"},
 			expectErr:         false,
 		},
-		"Expect an error if HostPath isn't shared and mount propagation is MountPropagation_PROPAGATION_BIDIRECTIONAL": {
+		{
+			desc: "Expect an error if HostPath isn't shared and mount propagation is MountPropagation_PROPAGATION_BIDIRECTIONAL",
 			criMount: &runtime.Mount{
 				ContainerPath: "container-path",
 				HostPath:      "host-path",
@@ -733,7 +577,8 @@ func TestMountPropagation(t *testing.T) {
 			fakeLookupMountFn: slaveLookupMountFn,
 			expectErr:         true,
 		},
-		"Expect an error if HostPath isn't slave or shared and mount propagation is MountPropagation_PROPAGATION_HOST_TO_CONTAINER": {
+		{
+			desc: "Expect an error if HostPath isn't slave or shared and mount propagation is MountPropagation_PROPAGATION_HOST_TO_CONTAINER",
 			criMount: &runtime.Mount{
 				ContainerPath: "container-path",
 				HostPath:      "host-path",
@@ -743,7 +588,8 @@ func TestMountPropagation(t *testing.T) {
 			expectErr:         true,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			c := newTestCRIService()
 			c.os.(*ostesting.FakeOS).LookupMountFn = test.fakeLookupMountFn
 			config, _, _, _ := getCreateContainerTestData()
@@ -770,24 +616,28 @@ func TestPidNamespace(t *testing.T) {
 	containerConfig, sandboxConfig, imageConfig, _ := getCreateContainerTestData()
 	ociRuntime := config.Runtime{}
 	c := newTestCRIService()
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc     string
 		pidNS    runtime.NamespaceMode
 		expected runtimespec.LinuxNamespace
 	}{
-		"node namespace mode": {
+		{
+			desc:  "node namespace mode",
 			pidNS: runtime.NamespaceMode_NODE,
 			expected: runtimespec.LinuxNamespace{
 				Type: runtimespec.PIDNamespace,
 				Path: opts.GetPIDNamespace(testPid),
 			},
 		},
-		"container namespace mode": {
+		{
+			desc:  "container namespace mode",
 			pidNS: runtime.NamespaceMode_CONTAINER,
 			expected: runtimespec.LinuxNamespace{
 				Type: runtimespec.PIDNamespace,
 			},
 		},
-		"pod namespace mode": {
+		{
+			desc:  "pod namespace mode",
 			pidNS: runtime.NamespaceMode_POD,
 			expected: runtimespec.LinuxNamespace{
 				Type: runtimespec.PIDNamespace,
@@ -795,7 +645,8 @@ func TestPidNamespace(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			containerConfig.Linux.SecurityContext.NamespaceOptions = &runtime.NamespaceOption{Pid: test.pidNS}
 			spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName, containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
 			require.NoError(t, err)
@@ -827,7 +678,9 @@ func TestUserNamespace(t *testing.T) {
 	containerConfig, sandboxConfig, imageConfig, _ := getCreateContainerTestData()
 	ociRuntime := config.Runtime{}
 	c := newTestCRIService()
-	for desc, test := range map[string]struct {
+
+	for _, test := range []struct {
+		desc          string
 		userNS        *runtime.UserNamespace
 		sandboxUserNS *runtime.UserNamespace
 		expNS         *runtimespec.LinuxNamespace
@@ -836,7 +689,8 @@ func TestUserNamespace(t *testing.T) {
 		expGIDMapping []runtimespec.LinuxIDMapping
 		err           bool
 	}{
-		"node namespace mode": {
+		{
+			desc:   "node namespace mode",
 			userNS: &runtime.UserNamespace{Mode: runtime.NamespaceMode_NODE},
 			// Expect userns to NOT be present.
 			expNotNS: &runtimespec.LinuxNamespace{
@@ -844,7 +698,8 @@ func TestUserNamespace(t *testing.T) {
 				Path: opts.GetUserNamespace(testPid),
 			},
 		},
-		"node namespace mode with mappings": {
+		{
+			desc: "node namespace mode with mappings",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_NODE,
 				Uids: []*runtime.IDMapping{&idMap},
@@ -852,19 +707,23 @@ func TestUserNamespace(t *testing.T) {
 			},
 			err: true,
 		},
-		"container namespace mode": {
+		{
+			desc:   "container namespace mode",
 			userNS: &runtime.UserNamespace{Mode: runtime.NamespaceMode_CONTAINER},
 			err:    true,
 		},
-		"target namespace mode": {
+		{
+			desc:   "target namespace mode",
 			userNS: &runtime.UserNamespace{Mode: runtime.NamespaceMode_TARGET},
 			err:    true,
 		},
-		"unknown namespace mode": {
+		{
+			desc:   "unknown namespace mode",
 			userNS: &runtime.UserNamespace{Mode: runtime.NamespaceMode(100)},
 			err:    true,
 		},
-		"pod namespace mode": {
+		{
+			desc: "pod namespace mode",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap},
@@ -877,7 +736,8 @@ func TestUserNamespace(t *testing.T) {
 			expUIDMapping: []runtimespec.LinuxIDMapping{expIDMap},
 			expGIDMapping: []runtimespec.LinuxIDMapping{expIDMap},
 		},
-		"pod namespace mode with inconsistent sandbox config (different GIDs)": {
+		{
+			desc: "pod namespace mode with inconsistent sandbox config (different GIDs)",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap},
@@ -890,7 +750,8 @@ func TestUserNamespace(t *testing.T) {
 			},
 			err: true,
 		},
-		"pod namespace mode with inconsistent sandbox config (different UIDs)": {
+		{
+			desc: "pod namespace mode with inconsistent sandbox config (different UIDs)",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap},
@@ -903,7 +764,8 @@ func TestUserNamespace(t *testing.T) {
 			},
 			err: true,
 		},
-		"pod namespace mode with inconsistent sandbox config (different len)": {
+		{
+			desc: "pod namespace mode with inconsistent sandbox config (different len)",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap},
@@ -916,7 +778,8 @@ func TestUserNamespace(t *testing.T) {
 			},
 			err: true,
 		},
-		"pod namespace mode with inconsistent sandbox config (different mode)": {
+		{
+			desc: "pod namespace mode with inconsistent sandbox config (different mode)",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap},
@@ -929,7 +792,8 @@ func TestUserNamespace(t *testing.T) {
 			},
 			err: true,
 		},
-		"pod namespace mode with several mappings": {
+		{
+			desc: "pod namespace mode with several mappings",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap, &idMap},
@@ -937,7 +801,8 @@ func TestUserNamespace(t *testing.T) {
 			},
 			err: true,
 		},
-		"pod namespace mode with uneven mappings": {
+		{
+			desc: "pod namespace mode with uneven mappings",
 			userNS: &runtime.UserNamespace{
 				Mode: runtime.NamespaceMode_POD,
 				Uids: []*runtime.IDMapping{&idMap, &idMap},
@@ -946,9 +811,8 @@ func TestUserNamespace(t *testing.T) {
 			err: true,
 		},
 	} {
-		desc := desc
 		test := test
-		t.Run(desc, func(t *testing.T) {
+		t.Run(test.desc, func(t *testing.T) {
 			containerConfig.Linux.SecurityContext.NamespaceOptions = &runtime.NamespaceOption{UsernsOptions: test.userNS}
 			// By default, set sandbox and container config to the same (this is
 			// required by containerSpec). However, if the test wants to test for what
@@ -997,7 +861,8 @@ func TestNoDefaultRunMount(t *testing.T) {
 }
 
 func TestGenerateSeccompSecurityProfileSpecOpts(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc           string
 		profile        string
 		privileged     bool
 		disable        bool
@@ -1006,98 +871,119 @@ func TestGenerateSeccompSecurityProfileSpecOpts(t *testing.T) {
 		defaultProfile string
 		sp             *runtime.SecurityProfile
 	}{
-		"should return error if seccomp is specified when seccomp is not supported": {
+		{
+			desc:      "should return error if seccomp is specified when seccomp is not supported",
 			profile:   runtimeDefault,
 			disable:   true,
 			expectErr: true,
 		},
-		"should not return error if seccomp is not specified when seccomp is not supported": {
+		{
+			desc:    "should not return error if seccomp is not specified when seccomp is not supported",
 			profile: "",
 			disable: true,
 		},
-		"should not return error if seccomp is unconfined when seccomp is not supported": {
+		{
+			desc:    "should not return error if seccomp is unconfined when seccomp is not supported",
 			profile: unconfinedProfile,
 			disable: true,
 		},
-		"should not set seccomp when privileged is true": {
+		{
+			desc:       "should not set seccomp when privileged is true",
 			profile:    seccompDefaultProfile,
 			privileged: true,
 		},
-		"should not set seccomp when seccomp is unconfined": {
+		{
+			desc:    "should not set seccomp when seccomp is unconfined",
 			profile: unconfinedProfile,
 		},
-		"should not set seccomp when seccomp is not specified": {
+		{
+			desc:    "should not set seccomp when seccomp is not specified",
 			profile: "",
 		},
-		"should set default seccomp when seccomp is runtime/default": {
+		{
+			desc:     "should set default seccomp when seccomp is runtime/default",
 			profile:  runtimeDefault,
 			specOpts: seccomp.WithDefaultProfile(),
 		},
-		"should set default seccomp when seccomp is docker/default": {
+		{
+			desc:     "should set default seccomp when seccomp is docker/default",
 			profile:  dockerDefault,
 			specOpts: seccomp.WithDefaultProfile(),
 		},
-		"should set specified profile when local profile is specified": {
+		{
+			desc:     "should set specified profile when local profile is specified",
 			profile:  profileNamePrefix + "test-profile",
 			specOpts: seccomp.WithProfile("test-profile"),
 		},
-		"should use default profile when seccomp is empty": {
+		{
+			desc:           "should use default profile when seccomp is empty",
 			defaultProfile: profileNamePrefix + "test-profile",
 			specOpts:       seccomp.WithProfile("test-profile"),
 		},
-		"should fallback to docker/default when seccomp is empty and default is runtime/default": {
+		{
+			desc:           "should fallback to docker/default when seccomp is empty and default is runtime/default",
 			defaultProfile: runtimeDefault,
 			specOpts:       seccomp.WithDefaultProfile(),
 		},
 		//-----------------------------------------------
 		// now buckets for the SecurityProfile variants
 		//-----------------------------------------------
-		"sp should return error if seccomp is specified when seccomp is not supported": {
+		{
+			desc:      "sp should return error if seccomp is specified when seccomp is not supported",
 			disable:   true,
 			expectErr: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_RuntimeDefault,
 			},
 		},
-		"sp should not return error if seccomp is unconfined when seccomp is not supported": {
+		{
+			desc:    "sp should not return error if seccomp is unconfined when seccomp is not supported",
 			disable: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_Unconfined,
 			},
 		},
-		"sp should not set seccomp when privileged is true": {
+		{
+			desc:       "sp should not set seccomp when privileged is true",
 			privileged: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_RuntimeDefault,
 			},
 		},
-		"sp should not set seccomp when seccomp is unconfined": {
+		{
+			desc: "sp should not set seccomp when seccomp is unconfined",
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_Unconfined,
 			},
 		},
-		"sp should not set seccomp when seccomp is not specified": {},
-		"sp should set default seccomp when seccomp is runtime/default": {
+		{
+			desc: "sp should not set seccomp when seccomp is not specified",
+		},
+		{
+			desc:     "sp should set default seccomp when seccomp is runtime/default",
 			specOpts: seccomp.WithDefaultProfile(),
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_RuntimeDefault,
 			},
 		},
-		"sp should set specified profile when local profile is specified": {
+		{
+			desc:     "sp should set specified profile when local profile is specified",
 			specOpts: seccomp.WithProfile("test-profile"),
 			sp: &runtime.SecurityProfile{
 				ProfileType:  runtime.SecurityProfile_Localhost,
 				LocalhostRef: profileNamePrefix + "test-profile",
 			},
 		},
-		"sp should set specified profile when local profile is specified even without prefix": {
+		{
+			desc:     "sp should set specified profile when local profile is specified even without prefix",
 			specOpts: seccomp.WithProfile("test-profile"),
 			sp: &runtime.SecurityProfile{
 				ProfileType:  runtime.SecurityProfile_Localhost,
 				LocalhostRef: "test-profile",
 			},
 		},
-		"sp should return error if specified profile is invalid": {
+		{
+			desc:      "sp should return error if specified profile is invalid",
 			expectErr: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType:  runtime.SecurityProfile_RuntimeDefault,
@@ -1105,7 +991,8 @@ func TestGenerateSeccompSecurityProfileSpecOpts(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			cri := &criService{}
 			cri.config.UnsetSeccompProfile = test.defaultProfile
 			ssp := test.sp
@@ -1137,7 +1024,8 @@ func TestGenerateSeccompSecurityProfileSpecOpts(t *testing.T) {
 }
 
 func TestGenerateApparmorSpecOpts(t *testing.T) {
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc       string
 		profile    string
 		privileged bool
 		disable    bool
@@ -1145,103 +1033,123 @@ func TestGenerateApparmorSpecOpts(t *testing.T) {
 		expectErr  bool
 		sp         *runtime.SecurityProfile
 	}{
-		"should return error if apparmor is specified when apparmor is not supported": {
+		{
+			desc:      "should return error if apparmor is specified when apparmor is not supported",
 			profile:   runtimeDefault,
 			disable:   true,
 			expectErr: true,
 		},
-		"should not return error if apparmor is not specified when apparmor is not supported": {
+		{
+			desc:    "should not return error if apparmor is not specified when apparmor is not supported",
 			profile: "",
 			disable: true,
 		},
-		"should set default apparmor when apparmor is not specified": {
+		{
+			desc:     "should set default apparmor when apparmor is not specified",
 			profile:  "",
 			specOpts: apparmor.WithDefaultProfile(appArmorDefaultProfileName),
 		},
-		"should not apparmor when apparmor is not specified and privileged is true": {
+		{
+			desc:       "should not apparmor when apparmor is not specified and privileged is true",
 			profile:    "",
 			privileged: true,
 		},
-		"should not return error if apparmor is unconfined when apparmor is not supported": {
+		{
+			desc:    "should not return error if apparmor is unconfined when apparmor is not supported",
 			profile: unconfinedProfile,
 			disable: true,
 		},
-		"should not apparmor when apparmor is unconfined": {
+		{
+			desc:    "should not apparmor when apparmor is unconfined",
 			profile: unconfinedProfile,
 		},
-		"should not apparmor when apparmor is unconfined and privileged is true": {
+		{
+			desc:       "should not apparmor when apparmor is unconfined and privileged is true",
 			profile:    unconfinedProfile,
 			privileged: true,
 		},
-		"should set default apparmor when apparmor is runtime/default": {
+		{
+			desc:     "should set default apparmor when apparmor is runtime/default",
 			profile:  runtimeDefault,
 			specOpts: apparmor.WithDefaultProfile(appArmorDefaultProfileName),
 		},
-		"should not apparmor when apparmor is default and privileged is true": {
+		{
+			desc:       "should not apparmor when apparmor is default and privileged is true",
 			profile:    runtimeDefault,
 			privileged: true,
 		},
 		// TODO (mikebrow) add success with existing defined profile tests
-		"should return error when undefined local profile is specified": {
+		{
+			desc:      "should return error when undefined local profile is specified",
 			profile:   profileNamePrefix + "test-profile",
 			expectErr: true,
 		},
-		"should return error when undefined local profile is specified and privileged is true": {
+		{
+			desc:       "should return error when undefined local profile is specified and privileged is true",
 			profile:    profileNamePrefix + "test-profile",
 			privileged: true,
 			expectErr:  true,
 		},
-		"should return error if specified profile is invalid": {
+		{
+			desc:      "should return error if specified profile is invalid",
 			profile:   "test-profile",
 			expectErr: true,
 		},
 		//--------------------------------------
 		// buckets for SecurityProfile struct
 		//--------------------------------------
-		"sp should return error if apparmor is specified when apparmor is not supported": {
+		{
+			desc:      "sp should return error if apparmor is specified when apparmor is not supported",
 			disable:   true,
 			expectErr: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_RuntimeDefault,
 			},
 		},
-		"sp should not return error if apparmor is unconfined when apparmor is not supported": {
+		{
+			desc:    "sp should not return error if apparmor is unconfined when apparmor is not supported",
 			disable: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_Unconfined,
 			},
 		},
-		"sp should not apparmor when apparmor is unconfined": {
+		{
+			desc: "sp should not apparmor when apparmor is unconfined",
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_Unconfined,
 			},
 		},
-		"sp should not apparmor when apparmor is unconfined and privileged is true": {
+		{
+			desc:       "sp should not apparmor when apparmor is unconfined and privileged is true",
 			privileged: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_Unconfined,
 			},
 		},
-		"sp should set default apparmor when apparmor is runtime/default": {
+		{
+			desc:     "sp should set default apparmor when apparmor is runtime/default",
 			specOpts: apparmor.WithDefaultProfile(appArmorDefaultProfileName),
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_RuntimeDefault,
 			},
 		},
-		"sp should not apparmor when apparmor is default and privileged is true": {
+		{
+			desc:       "sp should not apparmor when apparmor is default and privileged is true",
 			privileged: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType: runtime.SecurityProfile_RuntimeDefault,
 			},
 		},
-		"sp should return error when undefined local profile is specified": {
+		{
+			desc:      "sp should return error when undefined local profile is specified",
 			expectErr: true,
 			sp: &runtime.SecurityProfile{
 				ProfileType:  runtime.SecurityProfile_Localhost,
 				LocalhostRef: profileNamePrefix + "test-profile",
 			},
 		},
-		"sp should return error when undefined local profile is specified even without prefix": {
+		{
+			desc:      "sp should return error when undefined local profile is specified even without prefix",
 			profile:   profileNamePrefix + "test-profile",
 			expectErr: true,
 			sp: &runtime.SecurityProfile{
@@ -1249,7 +1157,8 @@ func TestGenerateApparmorSpecOpts(t *testing.T) {
 				LocalhostRef: "test-profile",
 			},
 		},
-		"sp should return error when undefined local profile is specified and privileged is true": {
+		{
+			desc:       "sp should return error when undefined local profile is specified and privileged is true",
 			privileged: true,
 			expectErr:  true,
 			sp: &runtime.SecurityProfile{
@@ -1258,7 +1167,8 @@ func TestGenerateApparmorSpecOpts(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			asp := test.sp
 			csp, err := generateApparmorSecurityProfile(test.profile)
 			if err != nil {
@@ -1297,7 +1207,8 @@ func TestMaskedAndReadonlyPaths(t *testing.T) {
 	defaultSpec, err := oci.GenerateSpec(ctrdutil.NamespacedContext(), nil, &containers.Container{ID: testID})
 	require.NoError(t, err)
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc             string
 		disableProcMount bool
 		masked           []string
 		readonly         []string
@@ -1305,7 +1216,8 @@ func TestMaskedAndReadonlyPaths(t *testing.T) {
 		expectedReadonly []string
 		privileged       bool
 	}{
-		"should apply default if not specified when disable_proc_mount = true": {
+		{
+			desc:             "should apply default if not specified when disable_proc_mount = true",
 			disableProcMount: true,
 			masked:           nil,
 			readonly:         nil,
@@ -1313,7 +1225,8 @@ func TestMaskedAndReadonlyPaths(t *testing.T) {
 			expectedReadonly: defaultSpec.Linux.ReadonlyPaths,
 			privileged:       false,
 		},
-		"should apply default if not specified when disable_proc_mount = false": {
+		{
+			desc:             "should apply default if not specified when disable_proc_mount = false",
 			disableProcMount: false,
 			masked:           nil,
 			readonly:         nil,
@@ -1321,33 +1234,38 @@ func TestMaskedAndReadonlyPaths(t *testing.T) {
 			expectedReadonly: []string{},
 			privileged:       false,
 		},
-		"should be able to specify empty paths": {
+		{
+			desc:             "should be able to specify empty paths",
 			masked:           []string{},
 			readonly:         []string{},
 			expectedMasked:   []string{},
 			expectedReadonly: []string{},
 			privileged:       false,
 		},
-		"should apply CRI specified paths": {
+		{
+			desc:             "should apply CRI specified paths",
 			masked:           []string{"/proc"},
 			readonly:         []string{"/sys"},
 			expectedMasked:   []string{"/proc"},
 			expectedReadonly: []string{"/sys"},
 			privileged:       false,
 		},
-		"default should be nil for privileged": {
+		{
+			desc:             "default should be nil for privileged",
 			expectedMasked:   nil,
 			expectedReadonly: nil,
 			privileged:       true,
 		},
-		"should be able to specify empty paths, esp. if privileged": {
+		{
+			desc:             "should be able to specify empty paths, esp. if privileged",
 			masked:           []string{},
 			readonly:         []string{},
 			expectedMasked:   nil,
 			expectedReadonly: nil,
 			privileged:       true,
 		},
-		"should not apply CRI specified paths if privileged": {
+		{
+			desc:             "should not apply CRI specified paths if privileged",
 			masked:           []string{"/proc"},
 			readonly:         []string{"/sys"},
 			expectedMasked:   nil,
@@ -1355,7 +1273,8 @@ func TestMaskedAndReadonlyPaths(t *testing.T) {
 			privileged:       true,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			c.config.DisableProcMount = test.disableProcMount
 			containerConfig.Linux.SecurityContext.MaskedPaths = test.masked
 			containerConfig.Linux.SecurityContext.ReadonlyPaths = test.readonly
@@ -1385,28 +1304,33 @@ func TestHostname(t *testing.T) {
 	c.os.(*ostesting.FakeOS).HostnameFn = func() (string, error) {
 		return "real-hostname", nil
 	}
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc        string
 		hostname    string
 		networkNs   runtime.NamespaceMode
 		expectedEnv string
 	}{
-		"should add HOSTNAME=sandbox.Hostname for pod network namespace": {
+		{
+			desc:        "should add HOSTNAME=sandbox.Hostname for pod network namespace",
 			hostname:    "test-hostname",
 			networkNs:   runtime.NamespaceMode_POD,
 			expectedEnv: "HOSTNAME=test-hostname",
 		},
-		"should add HOSTNAME=sandbox.Hostname for host network namespace": {
+		{
+			desc:        "should add HOSTNAME=sandbox.Hostname for host network namespace",
 			hostname:    "test-hostname",
 			networkNs:   runtime.NamespaceMode_NODE,
 			expectedEnv: "HOSTNAME=test-hostname",
 		},
-		"should add HOSTNAME=os.Hostname for host network namespace if sandbox.Hostname is not set": {
+		{
+			desc:        "should add HOSTNAME=os.Hostname for host network namespace if sandbox.Hostname is not set",
 			hostname:    "",
 			networkNs:   runtime.NamespaceMode_NODE,
 			expectedEnv: "HOSTNAME=real-hostname",
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			sandboxConfig.Hostname = test.hostname
 			sandboxConfig.Linux.SecurityContext = &runtime.LinuxSandboxSecurityContext{
 				NamespaceOptions: &runtime.NamespaceOption{Network: test.networkNs},
@@ -1506,6 +1430,92 @@ func TestGenerateUserString(t *testing.T) {
 	}
 }
 
+func TestProcessUser(t *testing.T) {
+	testID := "test-id"
+	testSandboxID := "sandbox-id"
+	testContainerName := "container-name"
+	testPid := uint32(1234)
+	ociRuntime := config.Runtime{}
+	c := newTestCRIService()
+	testContainer := &containers.Container{ID: "64ddfe361f0099f8d59075398feeb3dcb3863b6851df7b946744755066c03e9d"}
+	ctx := context.Background()
+
+	etcPasswd := `
+root:x:0:0:root:/root:/bin/sh
+alice:x:1000:1000:alice:/home/alice:/bin/sh
+` // #nosec G101
+	etcGroup := `
+root:x:0
+alice:x:1000:
+additional-group-for-alice:x:11111:alice
+additional-group-for-root:x:22222:root
+`
+	tempRootDir := t.TempDir()
+	require.NoError(t,
+		os.MkdirAll(filepath.Join(tempRootDir, "etc"), 0755),
+	)
+	require.NoError(t,
+		os.WriteFile(filepath.Join(tempRootDir, "etc", "passwd"), []byte(etcPasswd), 0644),
+	)
+	require.NoError(t,
+		os.WriteFile(filepath.Join(tempRootDir, "etc", "group"), []byte(etcGroup), 0644),
+	)
+
+	for _, test := range []struct {
+		desc            string
+		imageConfigUser string
+		securityContext *runtime.LinuxContainerSecurityContext
+		expected        runtimespec.User
+	}{
+		{
+			desc: "Only SecurityContext was set, SecurityContext defines User",
+			securityContext: &runtime.LinuxContainerSecurityContext{
+				RunAsUser:          &runtime.Int64Value{Value: 1000},
+				RunAsGroup:         &runtime.Int64Value{Value: 2000},
+				SupplementalGroups: []int64{3333},
+			},
+			expected: runtimespec.User{UID: 1000, GID: 2000, AdditionalGids: []uint32{2000, 3333, 11111}},
+		},
+		{
+			desc:            "Only imageConfig.User was set, imageConfig.User defines User",
+			imageConfigUser: "1000",
+			securityContext: nil,
+			expected:        runtimespec.User{UID: 1000, GID: 1000, AdditionalGids: []uint32{1000, 11111}},
+		},
+		{
+			desc:            "Both SecurityContext and ImageConfig.User was set, SecurityContext defines User",
+			imageConfigUser: "0",
+			securityContext: &runtime.LinuxContainerSecurityContext{
+				RunAsUser:          &runtime.Int64Value{Value: 1000},
+				RunAsGroup:         &runtime.Int64Value{Value: 2000},
+				SupplementalGroups: []int64{3333},
+			},
+			expected: runtimespec.User{UID: 1000, GID: 2000, AdditionalGids: []uint32{2000, 3333, 11111}},
+		},
+		{
+			desc:     "No SecurityContext nor ImageConfig.User were set, runtime default defines User",
+			expected: runtimespec.User{UID: 0, GID: 0, AdditionalGids: []uint32{0, 22222}},
+		},
+	} {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
+			containerConfig, sandboxConfig, imageConfig, _ := getCreateContainerTestData()
+			containerConfig.Linux.SecurityContext = test.securityContext
+			imageConfig.User = test.imageConfigUser
+
+			spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName, containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
+			require.NoError(t, err)
+
+			spec.Root.Path = tempRootDir // simulating /etc/{passwd, group}
+			opts, err := c.platformSpecOpts(platforms.DefaultSpec(), containerConfig, imageConfig)
+			require.NoError(t, err)
+			oci.ApplyOpts(ctx, nil, testContainer, spec, opts...)
+
+			require.Equal(t, test.expected, spec.Process.User)
+		})
+	}
+}
+
 func TestNonRootUserAndDevices(t *testing.T) {
 	testPid := uint32(1234)
 	c := newTestCRIService()
@@ -1518,32 +1528,37 @@ func TestNonRootUserAndDevices(t *testing.T) {
 
 	testDevice := hostDevicesRaw[0]
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc                               string
 		uid, gid                           *runtime.Int64Value
 		deviceOwnershipFromSecurityContext bool
 		expectedDeviceUID                  uint32
 		expectedDeviceGID                  uint32
 	}{
-		"expect non-root container's Devices Uid/Gid to be the same as the device Uid/Gid on the host when deviceOwnershipFromSecurityContext is disabled": {
+		{
+			desc:              "expect non-root container's Devices Uid/Gid to be the same as the device Uid/Gid on the host when deviceOwnershipFromSecurityContext is disabled",
 			uid:               &runtime.Int64Value{Value: 1},
 			gid:               &runtime.Int64Value{Value: 10},
 			expectedDeviceUID: *testDevice.UID,
 			expectedDeviceGID: *testDevice.GID,
 		},
-		"expect root container's Devices Uid/Gid to be the same as the device Uid/Gid on the host when deviceOwnershipFromSecurityContext is disabled": {
+		{
+			desc:              "expect root container's Devices Uid/Gid to be the same as the device Uid/Gid on the host when deviceOwnershipFromSecurityContext is disabled",
 			uid:               &runtime.Int64Value{Value: 0},
 			gid:               &runtime.Int64Value{Value: 0},
 			expectedDeviceUID: *testDevice.UID,
 			expectedDeviceGID: *testDevice.GID,
 		},
-		"expect non-root container's Devices Uid/Gid to be the same as RunAsUser/RunAsGroup when deviceOwnershipFromSecurityContext is enabled": {
+		{
+			desc:                               "expect non-root container's Devices Uid/Gid to be the same as RunAsUser/RunAsGroup when deviceOwnershipFromSecurityContext is enabled",
 			uid:                                &runtime.Int64Value{Value: 1},
 			gid:                                &runtime.Int64Value{Value: 10},
 			deviceOwnershipFromSecurityContext: true,
 			expectedDeviceUID:                  1,
 			expectedDeviceGID:                  10,
 		},
-		"expect root container's Devices Uid/Gid to be the same as the device Uid/Gid on the host when deviceOwnershipFromSecurityContext is enabled": {
+		{
+			desc:                               "expect root container's Devices Uid/Gid to be the same as the device Uid/Gid on the host when deviceOwnershipFromSecurityContext is enabled",
 			uid:                                &runtime.Int64Value{Value: 0},
 			gid:                                &runtime.Int64Value{Value: 0},
 			deviceOwnershipFromSecurityContext: true,
@@ -1551,7 +1566,8 @@ func TestNonRootUserAndDevices(t *testing.T) {
 			expectedDeviceGID:                  *testDevice.GID,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			c.config.DeviceOwnershipFromSecurityContext = test.deviceOwnershipFromSecurityContext
 			containerConfig.Linux.SecurityContext.RunAsUser = test.uid
 			containerConfig.Linux.SecurityContext.RunAsGroup = test.gid
@@ -1579,42 +1595,48 @@ func TestPrivilegedDevices(t *testing.T) {
 	testContainerName := "container-name"
 	containerConfig, sandboxConfig, imageConfig, _ := getCreateContainerTestData()
 
-	for desc, test := range map[string]struct {
+	for _, test := range []struct {
+		desc                                          string
 		privileged                                    bool
 		privilegedWithoutHostDevices                  bool
 		privilegedWithoutHostDevicesAllDevicesAllowed bool
 		expectHostDevices                             bool
 		expectAllDevicesAllowed                       bool
 	}{
-		"expect no host devices when privileged is false": {
+		{
+			desc:                         "expect no host devices when privileged is false",
 			privileged:                   false,
 			privilegedWithoutHostDevices: false,
 			privilegedWithoutHostDevicesAllDevicesAllowed: false,
 			expectHostDevices:       false,
 			expectAllDevicesAllowed: false,
 		},
-		"expect no host devices when privileged is false and privilegedWithoutHostDevices is true": {
+		{
+			desc:                         "expect no host devices when privileged is false and privilegedWithoutHostDevices is true",
 			privileged:                   false,
 			privilegedWithoutHostDevices: true,
 			privilegedWithoutHostDevicesAllDevicesAllowed: false,
 			expectHostDevices:       false,
 			expectAllDevicesAllowed: false,
 		},
-		"expect host devices and all device allowlist when privileged is true": {
+		{
+			desc:                         "expect host devices and all device allowlist when privileged is true",
 			privileged:                   true,
 			privilegedWithoutHostDevices: false,
 			privilegedWithoutHostDevicesAllDevicesAllowed: false,
 			expectHostDevices:       true,
 			expectAllDevicesAllowed: true,
 		},
-		"expect no host devices when privileged is true and privilegedWithoutHostDevices is true": {
+		{
+			desc:                         "expect no host devices when privileged is true and privilegedWithoutHostDevices is true",
 			privileged:                   true,
 			privilegedWithoutHostDevices: true,
 			privilegedWithoutHostDevicesAllDevicesAllowed: false,
 			expectHostDevices:       false,
 			expectAllDevicesAllowed: false,
 		},
-		"expect host devices and all devices allowlist when privileged is true and privilegedWithoutHostDevices is true and privilegedWithoutHostDevicesAllDevicesAllowed is true": {
+		{
+			desc:                         "expect host devices and all devices allowlist when privileged is true and privilegedWithoutHostDevices is true and privilegedWithoutHostDevicesAllDevicesAllowed is true",
 			privileged:                   true,
 			privilegedWithoutHostDevices: true,
 			privilegedWithoutHostDevicesAllDevicesAllowed: true,
@@ -1622,7 +1644,8 @@ func TestPrivilegedDevices(t *testing.T) {
 			expectAllDevicesAllowed: true,
 		},
 	} {
-		t.Run(desc, func(t *testing.T) {
+		test := test
+		t.Run(test.desc, func(t *testing.T) {
 			containerConfig.Linux.SecurityContext.Privileged = test.privileged
 			sandboxConfig.Linux.SecurityContext.Privileged = test.privileged
 
@@ -1733,13 +1756,20 @@ func TestCDIInjections(t *testing.T) {
 	for _, test := range []struct {
 		description   string
 		cdiSpecFiles  []string
+		cdiDevices    []*runtime.CDIDevice
 		annotations   map[string]string
 		expectError   bool
 		expectDevices []runtimespec.LinuxDevice
 		expectEnv     []string
 	}{
-		{description: "expect no CDI error for nil annotations"},
-		{description: "expect no CDI error for empty annotations",
+		{description: "expect no CDI error for nil annotations",
+			cdiDevices: []*runtime.CDIDevice{},
+		},
+		{description: "expect no CDI error for nil CDIDevices",
+			annotations: map[string]string{},
+		},
+		{description: "expect no CDI error for empty CDI devices and annotations",
+			cdiDevices:  []*runtime.CDIDevice{},
 			annotations: map[string]string{},
 		},
 		{description: "expect CDI error for invalid CDI device reference in annotations",
@@ -1748,13 +1778,25 @@ func TestCDIInjections(t *testing.T) {
 			},
 			expectError: true,
 		},
-		{description: "expect CDI error for unresolvable devices",
+		{description: "expect CDI error for invalid CDI device reference in CDIDevices",
+			cdiDevices: []*runtime.CDIDevice{
+				{Name: "foobar"},
+			},
+			expectError: true,
+		},
+		{description: "expect CDI error for unresolvable devices in annotations",
 			annotations: map[string]string{
 				cdi.AnnotationPrefix + "vendor1_devices": "vendor1.com/device=no-such-dev",
 			},
 			expectError: true,
 		},
-		{description: "expect properly injected resolvable CDI devices",
+		{description: "expect CDI error for unresolvable devices in CDIDevices",
+			cdiDevices: []*runtime.CDIDevice{
+				{Name: "vendor1.com/device=no-such-dev"},
+			},
+			expectError: true,
+		},
+		{description: "expect properly injected resolvable CDI devices from annotations",
 			cdiSpecFiles: []string{
 				`
 cdiVersion: "0.3.0"
@@ -1816,6 +1858,185 @@ containerEdits:
 				"VENDOR2=present",
 			},
 		},
+		{description: "expect properly injected resolvable CDI devices from CDIDevices",
+			cdiSpecFiles: []string{
+				`
+cdiVersion: "0.3.0"
+kind: "vendor1.com/device"
+devices:
+  - name: foo
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop8
+          type: b
+          major: 7
+          minor: 8
+      env:
+        - FOO=injected
+containerEdits:
+  env:
+    - "VENDOR1=present"
+`,
+				`
+cdiVersion: "0.3.0"
+kind: "vendor2.com/device"
+devices:
+  - name: bar
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop9
+          type: b
+          major: 7
+          minor: 9
+      env:
+        - BAR=injected
+containerEdits:
+  env:
+    - "VENDOR2=present"
+`,
+			},
+			cdiDevices: []*runtime.CDIDevice{
+				{Name: "vendor1.com/device=foo"},
+				{Name: "vendor2.com/device=bar"},
+			},
+			expectDevices: []runtimespec.LinuxDevice{
+				{
+					Path:  "/dev/loop8",
+					Type:  "b",
+					Major: 7,
+					Minor: 8,
+				},
+				{
+					Path:  "/dev/loop9",
+					Type:  "b",
+					Major: 7,
+					Minor: 9,
+				},
+			},
+			expectEnv: []string{
+				"FOO=injected",
+				"VENDOR1=present",
+				"BAR=injected",
+				"VENDOR2=present",
+			},
+		},
+		{description: "expect CDI devices from CDIDevices and annotations",
+			cdiSpecFiles: []string{
+				`
+cdiVersion: "0.3.0"
+kind: "vendor1.com/device"
+devices:
+  - name: foo
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop8
+          type: b
+          major: 7
+          minor: 8
+      env:
+        - FOO=injected
+containerEdits:
+  env:
+    - "VENDOR1=present"
+`,
+				`
+cdiVersion: "0.3.0"
+kind: "vendor2.com/device"
+devices:
+  - name: bar
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop9
+          type: b
+          major: 7
+          minor: 9
+      env:
+        - BAR=injected
+containerEdits:
+  env:
+    - "VENDOR2=present"
+`,
+				`
+cdiVersion: "0.3.0"
+kind: "vendor3.com/device"
+devices:
+  - name: foo3
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop10
+          type: b
+          major: 7
+          minor: 10
+      env:
+        - FOO3=injected
+containerEdits:
+  env:
+    - "VENDOR3=present"
+`,
+				`
+cdiVersion: "0.3.0"
+kind: "vendor4.com/device"
+devices:
+  - name: bar4
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop11
+          type: b
+          major: 7
+          minor: 11
+      env:
+        - BAR4=injected
+containerEdits:
+  env:
+    - "VENDOR4=present"
+`,
+			},
+			cdiDevices: []*runtime.CDIDevice{
+				{Name: "vendor1.com/device=foo"},
+				{Name: "vendor2.com/device=bar"},
+				{Name: "vendor3.com/device=foo3"},
+			},
+			annotations: map[string]string{
+				cdi.AnnotationPrefix + "vendor3_devices": "vendor3.com/device=foo3", // Duplicated device, should be ignored
+				cdi.AnnotationPrefix + "vendor4_devices": "vendor4.com/device=bar4",
+			},
+			expectDevices: []runtimespec.LinuxDevice{
+				{
+					Path:  "/dev/loop8",
+					Type:  "b",
+					Major: 7,
+					Minor: 8,
+				},
+				{
+					Path:  "/dev/loop9",
+					Type:  "b",
+					Major: 7,
+					Minor: 9,
+				},
+				{
+					Path:  "/dev/loop10",
+					Type:  "b",
+					Major: 7,
+					Minor: 10,
+				},
+				{
+					Path:  "/dev/loop11",
+					Type:  "b",
+					Major: 7,
+					Minor: 11,
+				},
+			},
+			expectEnv: []string{
+				"FOO=injected",
+				"VENDOR1=present",
+				"BAR=injected",
+				"VENDOR2=present",
+				"FOO3=injected",
+				"VENDOR3=present",
+				"BAR4=injected",
+				"VENDOR4=present",
+			},
+		},
 	} {
 		t.Run(test.description, func(t *testing.T) {
 			spec, err := c.buildContainerSpec(currentPlatform, testID, testSandboxID, testPid, "", testContainerName, testImageName, containerConfig, sandboxConfig, imageConfig, nil, ociRuntime)
@@ -1833,7 +2054,7 @@ containerEdits:
 			err = reg.Configure(cdi.WithSpecDirs(cdiDir))
 			require.NoError(t, err)
 
-			injectFun := customopts.WithCDI(test.annotations)
+			injectFun := customopts.WithCDI(test.annotations, test.cdiDevices)
 			err = injectFun(ctx, nil, testContainer, spec)
 			assert.Equal(t, test.expectError, err != nil)
 

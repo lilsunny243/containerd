@@ -26,33 +26,42 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
-	"github.com/sirupsen/logrus"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 // RemoveContainer removes the container.
 func (c *criService) RemoveContainer(ctx context.Context, r *runtime.RemoveContainerRequest) (_ *runtime.RemoveContainerResponse, retErr error) {
 	start := time.Now()
-	container, err := c.containerStore.Get(r.GetContainerId())
+	ctrID := r.GetContainerId()
+	container, err := c.containerStore.Get(ctrID)
 	if err != nil {
 		if !errdefs.IsNotFound(err) {
-			return nil, fmt.Errorf("an error occurred when try to find container %q: %w", r.GetContainerId(), err)
+			return nil, fmt.Errorf("an error occurred when try to find container %q: %w", ctrID, err)
 		}
 		// Do not return error if container metadata doesn't exist.
-		log.G(ctx).Tracef("RemoveContainer called for container %q that does not exist", r.GetContainerId())
+		log.G(ctx).Tracef("RemoveContainer called for container %q that does not exist", ctrID)
 		return &runtime.RemoveContainerResponse{}, nil
 	}
 	id := container.ID
 	i, err := container.Container.Info(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get container info: %w", err)
+		if !errdefs.IsNotFound(err) {
+			return nil, fmt.Errorf("get container info: %w", err)
+		}
+		// Since containerd doesn't see the container and criservice's content store does,
+		// we should try to recover from this state by removing entry for this container
+		// from the container store as well and return successfully.
+		log.G(ctx).WithError(err).Warn("get container info failed")
+		c.containerStore.Delete(ctrID)
+		c.containerNameIndex.ReleaseByKey(ctrID)
+		return &runtime.RemoveContainerResponse{}, nil
 	}
 
 	// Forcibly stop the containers if they are in running or unknown state
 	state := container.Status.Get().State()
 	if state == runtime.ContainerState_CONTAINER_RUNNING ||
 		state == runtime.ContainerState_CONTAINER_UNKNOWN {
-		logrus.Infof("Forcibly stopping container %q", id)
+		log.L.Infof("Forcibly stopping container %q", id)
 		if err := c.stopContainer(ctx, container, 0); err != nil {
 			return nil, fmt.Errorf("failed to forcibly stop container %q: %w", id, err)
 		}

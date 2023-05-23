@@ -58,6 +58,13 @@ Binaries are generated from `main` branch every night for `Linux` and `Windows`.
 
 Please be aware: nightly builds might have critical bugs, it's not recommended for use in production and no support provided.
 
+## Kubernetes (k8s) CI Dashboard Group
+
+The [k8s CI dashboard group for containerd](https://testgrid.k8s.io/containerd) contains test results regarding
+the health of kubernetes when run against main and a number of containerd release branches.
+
+- [containerd-periodics](https://testgrid.k8s.io/containerd-periodic)
+
 ## Runtime Requirements
 
 Runtime requirements for containerd are very minimal. Most interactions with
@@ -309,7 +316,7 @@ A Kubernetes incubator project, [cri-tools](https://github.com/kubernetes-sigs/c
 
 #### CRI Guides
 * [Installing with Ansible and Kubeadm](contrib/ansible/README.md)
-* [For Non-Ansible Users, Preforming a Custom Installation Using the Release Tarball and Kubeadm](docs/cri/installation.md)
+* [For Non-Ansible Users, Preforming a Custom Installation Using the Release Tarball and Kubeadm](docs/getting-started.md)
 * [CRI Plugin Testing Guide](./docs/cri/testing.md)
 * [Debugging Pods, Containers, and Images with `crictl`](./docs/cri/crictl.md)
 * [Configuring `cri` Plugins](./docs/cri/config.md)
@@ -324,7 +331,7 @@ For sync communication catch us in the `#containerd` and `#containerd-dev` Slack
 
 ### Security audit
 
-A third-party security audit was performed by Cure53 in 4Q2018; the [full report](docs/SECURITY_AUDIT.pdf) is available in our docs/ directory.
+Security audits for the containerd project are hosted on our website. Please see the [security page at containerd.io](https://containerd.io/security/) for more information.
 
 ### Reporting security issues
 
