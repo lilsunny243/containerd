@@ -3,19 +3,13 @@ on:
   # When added to a merge queue.
   # See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue#triggering-merge-group-checks-with-github-actions
   merge_group:
-  push:
-    branches:
-      - main
-      - "release/**"
   pull_request:
-    branches:
-      - main
-      - "release/**"
+    branches: ['main', 'release/**']
 
 env:
   # Go version we currently use to build containerd across all CI.
   # Note: don't forget to update `Binaries` step, as it contains the matrix of all supported Go versions.
-  GO_VERSION: "1.20.4"
+  GO_VERSION: "1.20.6"
 
 permissions: # added using https://github.com/step-security/secure-workflows
   contents: read
@@ -215,7 +209,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-20.04, macos-12, windows-2019, windows-2022]
-        go-version: ["1.20.4", "1.19.9"]
+        go-version: ["1.20.6", "1.19.11"]
     steps:
       - uses: actions/setup-go@v4
         with:

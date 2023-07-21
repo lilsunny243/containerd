@@ -93,7 +93,7 @@ func Test_criService_podSandboxStats(t *testing.T) {
 		metrics                map[string]*wstats.Statistics
 		sandbox                sandboxstore.Sandbox
 		containers             []containerstore.Container
-		expectedPodStats       expectedStats
+		expectedPodStats       *expectedStats
 		expectedContainerStats []expectedStats
 		expectError            bool
 	}{
@@ -102,7 +102,7 @@ func Test_criService_podSandboxStats(t *testing.T) {
 			metrics:                map[string]*wstats.Statistics{},
 			sandbox:                sandboxstore.Sandbox{},
 			containers:             []containerstore.Container{},
-			expectedPodStats:       expectedStats{},
+			expectedPodStats:       &expectedStats{},
 			expectedContainerStats: []expectedStats{},
 			expectError:            true,
 		},
@@ -118,9 +118,104 @@ func Test_criService_podSandboxStats(t *testing.T) {
 			},
 			sandbox: sandboxstore.Sandbox{Metadata: sandboxstore.Metadata{ID: "s1"}},
 			containers: []containerstore.Container{
-				{Metadata: containerstore.Metadata{ID: "c1"}},
+				newContainer("c1", running, nil),
 			},
-			expectedPodStats: expectedStats{
+			expectedPodStats: &expectedStats{
+				UsageCoreNanoSeconds: 400,
+				UsageNanoCores:       0,
+				WorkingSetBytes:      40,
+			},
+			expectedContainerStats: []expectedStats{
+				{
+					UsageCoreNanoSeconds: 200,
+					UsageNanoCores:       0,
+					WorkingSetBytes:      20,
+				},
+			},
+			expectError: false,
+		},
+		{
+			desc: "pod stats will include the init container stats",
+			metrics: map[string]*wstats.Statistics{
+				"c1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+				"s1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+				"i1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+			},
+			sandbox: sandboxstore.Sandbox{Metadata: sandboxstore.Metadata{ID: "s1"}},
+			containers: []containerstore.Container{
+				newContainer("c1", running, nil),
+				newContainer("i1", running, nil),
+			},
+			expectedPodStats: &expectedStats{
+				UsageCoreNanoSeconds: 600,
+				UsageNanoCores:       0,
+				WorkingSetBytes:      60,
+			},
+			expectedContainerStats: []expectedStats{
+				{
+					UsageCoreNanoSeconds: 200,
+					UsageNanoCores:       0,
+					WorkingSetBytes:      20,
+				},
+				{
+					UsageCoreNanoSeconds: 200,
+					UsageNanoCores:       0,
+					WorkingSetBytes:      20,
+				},
+			},
+			expectError: false,
+		},
+		{
+			desc: "pod stats will not include the init container stats if it is stopped",
+			metrics: map[string]*wstats.Statistics{
+				"c1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+				"s1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+			},
+			sandbox: sandboxstore.Sandbox{Metadata: sandboxstore.Metadata{ID: "s1"}},
+			containers: []containerstore.Container{
+				newContainer("c1", running, nil),
+				newContainer("i1", exitedValid, nil),
+			},
+			expectedPodStats: &expectedStats{
+				UsageCoreNanoSeconds: 400,
+				UsageNanoCores:       0,
+				WorkingSetBytes:      40,
+			},
+			expectedContainerStats: []expectedStats{
+				{
+					UsageCoreNanoSeconds: 200,
+					UsageNanoCores:       0,
+					WorkingSetBytes:      20,
+				},
+			},
+			expectError: false,
+		},
+		{
+			desc: "pod stats will not include the init container stats if it is stopped in failed state",
+			metrics: map[string]*wstats.Statistics{
+				"c1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+				"s1": {
+					Container: windowsStat(currentStatsTimestamp, 200, 20),
+				},
+			},
+			sandbox: sandboxstore.Sandbox{Metadata: sandboxstore.Metadata{ID: "s1"}},
+			containers: []containerstore.Container{
+				newContainer("c1", running, nil),
+				newContainer("i1", exitedInvalid, nil),
+			},
+			expectedPodStats: &expectedStats{
 				UsageCoreNanoSeconds: 400,
 				UsageNanoCores:       0,
 				WorkingSetBytes:      40,
@@ -146,15 +241,12 @@ func Test_criService_podSandboxStats(t *testing.T) {
 			},
 			sandbox: sandboxPod("s1", initialStatsTimestamp, 400),
 			containers: []containerstore.Container{
-				{
-					Metadata: containerstore.Metadata{ID: "c1"},
-					Stats: &stats.ContainerStats{
-						Timestamp:            initialStatsTimestamp,
-						UsageCoreNanoSeconds: 200,
-					},
-				},
+				newContainer("c1", running, &stats.ContainerStats{
+					Timestamp:            initialStatsTimestamp,
+					UsageCoreNanoSeconds: 200,
+				}),
 			},
-			expectedPodStats: expectedStats{
+			expectedPodStats: &expectedStats{
 				UsageCoreNanoSeconds: 800,
 				UsageNanoCores:       400,
 				WorkingSetBytes:      40,
@@ -178,15 +270,12 @@ func Test_criService_podSandboxStats(t *testing.T) {
 			},
 			sandbox: sandboxPod("s1", initialStatsTimestamp, 200),
 			containers: []containerstore.Container{
-				{
-					Metadata: containerstore.Metadata{ID: "c1"},
-					Stats: &stats.ContainerStats{
-						Timestamp:            initialStatsTimestamp,
-						UsageCoreNanoSeconds: 200,
-					},
-				},
+				newContainer("c1", running, &stats.ContainerStats{
+					Timestamp:            initialStatsTimestamp,
+					UsageCoreNanoSeconds: 200,
+				}),
 			},
-			expectedPodStats: expectedStats{
+			expectedPodStats: &expectedStats{
 				UsageCoreNanoSeconds: 400,
 				UsageNanoCores:       200,
 				WorkingSetBytes:      20,
@@ -200,12 +289,74 @@ func Test_criService_podSandboxStats(t *testing.T) {
 			},
 			expectError: false,
 		},
+		{
+			desc: "pod sandbox with empty stats still works (hostprocess container scenario)",
+			metrics: map[string]*wstats.Statistics{
+				"c1": {
+					Container: windowsStat(currentStatsTimestamp, 400, 20),
+				},
+				"s1": {},
+			},
+			sandbox: sandboxPod("s1", initialStatsTimestamp, 200),
+			containers: []containerstore.Container{
+				newContainer("c1", running, &stats.ContainerStats{
+					Timestamp:            initialStatsTimestamp,
+					UsageCoreNanoSeconds: 200,
+				}),
+			},
+			expectedPodStats: &expectedStats{
+				UsageCoreNanoSeconds: 400,
+				UsageNanoCores:       200,
+				WorkingSetBytes:      20,
+			},
+			expectedContainerStats: []expectedStats{
+				{
+					UsageCoreNanoSeconds: 400,
+					UsageNanoCores:       200,
+					WorkingSetBytes:      20,
+				},
+			},
+			expectError: false,
+		},
+		{
+			desc: "pod sandbox with a container that has no cpu shouldn't error",
+			metrics: map[string]*wstats.Statistics{
+				"c1": {},
+				"s1": {},
+			},
+			sandbox: sandboxPod("s1", initialStatsTimestamp, 200),
+			containers: []containerstore.Container{
+				newContainer("c1", running, &stats.ContainerStats{
+					Timestamp:            initialStatsTimestamp,
+					UsageCoreNanoSeconds: 200,
+				}),
+			},
+			expectedPodStats:       nil,
+			expectedContainerStats: []expectedStats{},
+			expectError:            false,
+		},
+		{
+			desc:                   "pod sandbox with no stats in metric mapp will fail",
+			metrics:                map[string]*wstats.Statistics{},
+			sandbox:                sandboxPod("s1", initialStatsTimestamp, 200),
+			containers:             []containerstore.Container{},
+			expectedPodStats:       nil,
+			expectedContainerStats: []expectedStats{},
+			expectError:            true,
+		},
 	} {
 		test := test
 		t.Run(test.desc, func(t *testing.T) {
 			actualPodStats, actualContainerStats, err := c.toPodSandboxStats(test.sandbox, test.metrics, test.containers, currentStatsTimestamp)
 			if test.expectError {
 				assert.NotNil(t, err)
+				return
+			}
+			assert.Nil(t, err)
+
+			if test.expectedPodStats == nil {
+				assert.Nil(t, actualPodStats.Cpu)
+				assert.Nil(t, actualPodStats.Memory)
 				return
 			}
 
@@ -242,6 +393,33 @@ func windowsStat(timestamp time.Time, cpu uint64, memory uint64) *wstats.Statist
 			},
 		},
 	}
+}
+
+func newContainer(id string, status containerstore.Status, stats *stats.ContainerStats) containerstore.Container {
+	cntr, err := containerstore.NewContainer(containerstore.Metadata{ID: id}, containerstore.WithFakeStatus(status))
+	if err != nil {
+		panic(err)
+	}
+	if stats != nil {
+		cntr.Stats = stats
+	}
+	return cntr
+}
+
+var exitedValid = containerstore.Status{
+	StartedAt:  time.Now().UnixNano(),
+	FinishedAt: time.Now().UnixNano(),
+	ExitCode:   0,
+}
+
+var exitedInvalid = containerstore.Status{
+	StartedAt:  time.Now().UnixNano(),
+	FinishedAt: time.Now().UnixNano(),
+	ExitCode:   1,
+}
+
+var running = containerstore.Status{
+	StartedAt: time.Now().UnixNano(),
 }
 
 func Test_criService_saveSandBoxMetrics(t *testing.T) {

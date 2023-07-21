@@ -80,10 +80,6 @@ const (
 	containerKindSandbox = "sandbox"
 	// containerKindContainer is a label value indicating container is application container
 	containerKindContainer = "container"
-	// imageLabelKey is the label key indicating the image is managed by cri plugin.
-	imageLabelKey = criContainerdPrefix + ".image"
-	// imageLabelValue is the label value indicating the image is managed by cri plugin.
-	imageLabelValue = "managed"
 	// sandboxMetadataExtension is an extension name that identify metadata of sandbox in CreateContainerRequest
 	sandboxMetadataExtension = criContainerdPrefix + ".sandbox.metadata"
 	// containerMetadataExtension is an extension name that identify metadata of container in CreateContainerRequest
@@ -336,7 +332,7 @@ func parseImageReferences(refs []string) ([]string, []string) {
 }
 
 // generateRuntimeOptions generates runtime options from cri plugin config.
-func generateRuntimeOptions(r criconfig.Runtime, c criconfig.Config) (interface{}, error) {
+func generateRuntimeOptions(r criconfig.Runtime) (interface{}, error) {
 	if r.Options == nil {
 		return nil, nil
 	}

@@ -58,7 +58,7 @@ type Image interface {
 	Usage(context.Context, ...UsageOpt) (int64, error)
 	// Config descriptor for the image.
 	Config(ctx context.Context) (ocispec.Descriptor, error)
-	// IsUnpacked returns whether or not an image is unpacked.
+	// IsUnpacked returns whether an image is unpacked.
 	IsUnpacked(context.Context, string) (bool, error)
 	// ContentStore provides a content store which contains image blob data
 	ContentStore() content.Store
@@ -285,15 +285,14 @@ func (i *image) IsUnpacked(ctx context.Context, snapshotterName string) (bool, e
 		return false, err
 	}
 
-	chainID := identity.ChainID(diffs)
-	_, err = sn.Stat(ctx, chainID.String())
-	if err == nil {
-		return true, nil
-	} else if !errdefs.IsNotFound(err) {
+	if _, err := sn.Stat(ctx, identity.ChainID(diffs).String()); err != nil {
+		if errdefs.IsNotFound(err) {
+			return false, nil
+		}
 		return false, err
 	}
 
-	return false, nil
+	return true, nil
 }
 
 func (i *image) Spec(ctx context.Context) (ocispec.Image, error) {
@@ -423,12 +422,12 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 		return err
 	}
 
-	rootfs := identity.ChainID(chain).String()
+	rootFS := identity.ChainID(chain).String()
 
 	cinfo := content.Info{
 		Digest: desc.Digest,
 		Labels: map[string]string{
-			fmt.Sprintf("containerd.io/gc.ref.snapshot.%s", snapshotterName): rootfs,
+			fmt.Sprintf("containerd.io/gc.ref.snapshot.%s", snapshotterName): rootFS,
 		},
 	}
 
@@ -465,27 +464,13 @@ func (i *image) getLayers(ctx context.Context, manifest ocispec.Manifest) ([]roo
 	return layers, nil
 }
 
-func (i *image) getManifestPlatform(ctx context.Context, manifest ocispec.Manifest) (ocispec.Platform, error) {
-	cs := i.ContentStore()
-	p, err := content.ReadBlob(ctx, cs, manifest.Config)
-	if err != nil {
-		return ocispec.Platform{}, err
-	}
-
-	var image ocispec.Image
-	if err := json.Unmarshal(p, &image); err != nil {
-		return ocispec.Platform{}, err
-	}
-	return platforms.Normalize(ocispec.Platform{OS: image.OS, Architecture: image.Architecture}), nil
-}
-
 func (i *image) checkSnapshotterSupport(ctx context.Context, snapshotterName string, manifest ocispec.Manifest) error {
 	snapshotterPlatformMatcher, err := i.client.GetSnapshotterSupportedPlatforms(ctx, snapshotterName)
 	if err != nil {
 		return err
 	}
 
-	manifestPlatform, err := i.getManifestPlatform(ctx, manifest)
+	manifestPlatform, err := images.ConfigPlatform(ctx, i.ContentStore(), manifest.Config)
 	if err != nil {
 		return err
 	}

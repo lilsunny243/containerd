@@ -381,6 +381,91 @@ file {
   syntax: "proto3"
 }
 file {
+  name: "google/protobuf/timestamp.proto"
+  package: "google.protobuf"
+  message_type {
+    name: "Timestamp"
+    field {
+      name: "seconds"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_INT64
+      json_name: "seconds"
+    }
+    field {
+      name: "nanos"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_INT32
+      json_name: "nanos"
+    }
+  }
+  options {
+    java_package: "com.google.protobuf"
+    java_outer_classname: "TimestampProto"
+    java_multiple_files: true
+    go_package: "google.golang.org/protobuf/types/known/timestamppb"
+    cc_enable_arenas: true
+    objc_class_prefix: "GPB"
+    csharp_namespace: "Google.Protobuf.WellKnownTypes"
+  }
+  syntax: "proto3"
+}
+file {
+  name: "github.com/containerd/containerd/api/events/sandbox.proto"
+  package: "containerd.events"
+  dependency: "google/protobuf/timestamp.proto"
+  message_type {
+    name: "SandboxCreate"
+    field {
+      name: "sandbox_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "sandboxId"
+    }
+  }
+  message_type {
+    name: "SandboxStart"
+    field {
+      name: "sandbox_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "sandboxId"
+    }
+  }
+  message_type {
+    name: "SandboxExit"
+    field {
+      name: "sandbox_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "sandboxId"
+    }
+    field {
+      name: "exit_status"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_UINT32
+      json_name: "exitStatus"
+    }
+    field {
+      name: "exited_at"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".google.protobuf.Timestamp"
+      json_name: "exitedAt"
+    }
+  }
+  options {
+    go_package: "github.com/containerd/containerd/api/events;events"
+  }
+  syntax: "proto3"
+}
+file {
   name: "github.com/containerd/containerd/api/events/snapshot.proto"
   package: "containerd.events"
   dependency: "github.com/containerd/containerd/protobuf/plugin/fieldpath.proto"
@@ -452,37 +537,6 @@ file {
   options {
     go_package: "github.com/containerd/containerd/api/events;events"
     63300: 1
-  }
-  syntax: "proto3"
-}
-file {
-  name: "google/protobuf/timestamp.proto"
-  package: "google.protobuf"
-  message_type {
-    name: "Timestamp"
-    field {
-      name: "seconds"
-      number: 1
-      label: LABEL_OPTIONAL
-      type: TYPE_INT64
-      json_name: "seconds"
-    }
-    field {
-      name: "nanos"
-      number: 2
-      label: LABEL_OPTIONAL
-      type: TYPE_INT32
-      json_name: "nanos"
-    }
-  }
-  options {
-    java_package: "com.google.protobuf"
-    java_outer_classname: "TimestampProto"
-    java_multiple_files: true
-    go_package: "google.golang.org/protobuf/types/known/timestamppb"
-    cc_enable_arenas: true
-    objc_class_prefix: "GPB"
-    csharp_namespace: "Google.Protobuf.WellKnownTypes"
   }
   syntax: "proto3"
 }
@@ -831,12 +885,49 @@ file {
   syntax: "proto3"
 }
 file {
+  name: "github.com/containerd/containerd/api/types/metrics.proto"
+  package: "containerd.types"
+  dependency: "google/protobuf/any.proto"
+  dependency: "google/protobuf/timestamp.proto"
+  message_type {
+    name: "Metric"
+    field {
+      name: "timestamp"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".google.protobuf.Timestamp"
+      json_name: "timestamp"
+    }
+    field {
+      name: "id"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field {
+      name: "data"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".google.protobuf.Any"
+      json_name: "data"
+    }
+  }
+  options {
+    go_package: "github.com/containerd/containerd/api/types;types"
+  }
+  syntax: "proto3"
+}
+file {
   name: "github.com/containerd/containerd/api/runtime/sandbox/v1/sandbox.proto"
   package: "containerd.runtime.sandbox.v1"
   dependency: "google/protobuf/any.proto"
   dependency: "google/protobuf/timestamp.proto"
   dependency: "github.com/containerd/containerd/api/types/mount.proto"
   dependency: "github.com/containerd/containerd/api/types/platform.proto"
+  dependency: "github.com/containerd/containerd/api/types/metrics.proto"
   message_type {
     name: "CreateSandboxRequest"
     field {
@@ -1145,6 +1236,27 @@ file {
   message_type {
     name: "ShutdownSandboxResponse"
   }
+  message_type {
+    name: "SandboxMetricsRequest"
+    field {
+      name: "sandbox_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "sandboxId"
+    }
+  }
+  message_type {
+    name: "SandboxMetricsResponse"
+    field {
+      name: "metrics"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".containerd.types.Metric"
+      json_name: "metrics"
+    }
+  }
   service {
     name: "Sandbox"
     method {
@@ -1186,6 +1298,11 @@ file {
       name: "ShutdownSandbox"
       input_type: ".containerd.runtime.sandbox.v1.ShutdownSandboxRequest"
       output_type: ".containerd.runtime.sandbox.v1.ShutdownSandboxResponse"
+    }
+    method {
+      name: "SandboxMetrics"
+      input_type: ".containerd.runtime.sandbox.v1.SandboxMetricsRequest"
+      output_type: ".containerd.runtime.sandbox.v1.SandboxMetricsResponse"
     }
   }
   options {
@@ -4889,6 +5006,7 @@ file {
   dependency: "github.com/containerd/containerd/api/types/sandbox.proto"
   dependency: "github.com/containerd/containerd/api/types/mount.proto"
   dependency: "github.com/containerd/containerd/api/types/platform.proto"
+  dependency: "github.com/containerd/containerd/api/types/metrics.proto"
   message_type {
     name: "StoreCreateRequest"
     field {
@@ -5276,6 +5394,27 @@ file {
   message_type {
     name: "ControllerShutdownResponse"
   }
+  message_type {
+    name: "ControllerMetricsRequest"
+    field {
+      name: "sandbox_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "sandboxId"
+    }
+  }
+  message_type {
+    name: "ControllerMetricsResponse"
+    field {
+      name: "metrics"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".containerd.types.Metric"
+      json_name: "metrics"
+    }
+  }
   service {
     name: "Store"
     method {
@@ -5340,6 +5479,11 @@ file {
       name: "Shutdown"
       input_type: ".containerd.services.sandbox.v1.ControllerShutdownRequest"
       output_type: ".containerd.services.sandbox.v1.ControllerShutdownResponse"
+    }
+    method {
+      name: "Metrics"
+      input_type: ".containerd.services.sandbox.v1.ControllerMetricsRequest"
+      output_type: ".containerd.services.sandbox.v1.ControllerMetricsResponse"
     }
   }
   options {
@@ -5887,42 +6031,6 @@ file {
   }
   options {
     go_package: "github.com/containerd/containerd/api/services/streaming/v1;streaming"
-  }
-  syntax: "proto3"
-}
-file {
-  name: "github.com/containerd/containerd/api/types/metrics.proto"
-  package: "containerd.types"
-  dependency: "google/protobuf/any.proto"
-  dependency: "google/protobuf/timestamp.proto"
-  message_type {
-    name: "Metric"
-    field {
-      name: "timestamp"
-      number: 1
-      label: LABEL_OPTIONAL
-      type: TYPE_MESSAGE
-      type_name: ".google.protobuf.Timestamp"
-      json_name: "timestamp"
-    }
-    field {
-      name: "id"
-      number: 2
-      label: LABEL_OPTIONAL
-      type: TYPE_STRING
-      json_name: "id"
-    }
-    field {
-      name: "data"
-      number: 3
-      label: LABEL_OPTIONAL
-      type: TYPE_MESSAGE
-      type_name: ".google.protobuf.Any"
-      json_name: "data"
-    }
-  }
-  options {
-    go_package: "github.com/containerd/containerd/api/types;types"
   }
   syntax: "proto3"
 }

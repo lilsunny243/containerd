@@ -53,11 +53,6 @@ import (
 )
 
 func empty() cio.Creator {
-	// TODO (@mlaventure) windows searches for pipes
-	// when none are provided
-	if runtime.GOOS == "windows" {
-		return cio.NewCreator(cio.WithStdio, cio.WithTerminal)
-	}
 	return cio.NullIO
 }
 
@@ -177,7 +172,7 @@ func TestContainerStart(t *testing.T) {
 }
 
 func readShimPath(taskID string) (string, error) {
-	runtime := fmt.Sprintf("%s.%s", plugin.RuntimePluginV2, "task")
+	runtime := plugin.RuntimePluginV2.String() + ".task"
 	shimBinaryNamePath := filepath.Join(defaultState, runtime, testNamespace, taskID, "shim-binary-path")
 
 	shimPath, err := os.ReadFile(shimBinaryNamePath)
@@ -328,7 +323,7 @@ func TestContainerOutput(t *testing.T) {
 	defer container.Delete(ctx, WithSnapshotCleanup)
 
 	stdout := bytes.NewBuffer(nil)
-	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(stdout)))
+	task, err := container.NewTask(ctx, cio.NewCreator(withStdout(stdout)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,12 +355,11 @@ func TestContainerOutput(t *testing.T) {
 	}
 }
 
-func withByteBuffers(stdout io.Writer) cio.Opt {
-	// TODO: could this use io.Discard?
+func withStdout(stdout io.Writer) cio.Opt {
 	return func(streams *cio.Streams) {
-		streams.Stdin = new(bytes.Buffer)
+		streams.Stdin = bytes.NewReader(nil)
 		streams.Stdout = stdout
-		streams.Stderr = new(bytes.Buffer)
+		streams.Stderr = io.Discard
 	}
 }
 
@@ -1264,7 +1258,7 @@ func TestContainerHostname(t *testing.T) {
 	defer container.Delete(ctx, WithSnapshotCleanup)
 
 	stdout := bytes.NewBuffer(nil)
-	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(stdout)))
+	task, err := container.NewTask(ctx, cio.NewCreator(withStdout(stdout)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1869,7 +1863,7 @@ func TestContainerExecLargeOutputWithTTY(t *testing.T) {
 		stdout := bytes.NewBuffer(nil)
 
 		execID := t.Name() + "_exec"
-		process, err := task.Exec(ctx, execID, processSpec, cio.NewCreator(withByteBuffers(stdout), withProcessTTY()))
+		process, err := task.Exec(ctx, execID, processSpec, cio.NewCreator(withStdout(stdout), withProcessTTY()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2278,8 +2272,7 @@ func initContainerAndCheckChildrenDieOnKill(t *testing.T, opts ...oci.SpecOpts) 
 	}
 	defer container.Delete(ctx, WithSnapshotCleanup)
 
-	stdout := bytes.NewBuffer(nil)
-	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(stdout)))
+	task, err := container.NewTask(ctx, cio.NullIO)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2623,7 +2616,7 @@ func TestContainerUsername(t *testing.T) {
 	defer container.Delete(ctx, WithSnapshotCleanup)
 
 	buf := bytes.NewBuffer(nil)
-	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(buf)))
+	task, err := container.NewTask(ctx, cio.NewCreator(withStdout(buf)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2675,7 +2668,7 @@ func TestContainerPTY(t *testing.T) {
 	defer container.Delete(ctx, WithSnapshotCleanup)
 
 	buf := bytes.NewBuffer(nil)
-	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(buf), withProcessTTY()))
+	task, err := container.NewTask(ctx, cio.NewCreator(withStdout(buf), withProcessTTY()))
 	if err != nil {
 		t.Fatal(err)
 	}

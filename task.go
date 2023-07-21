@@ -17,9 +17,7 @@
 package containerd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -311,7 +309,7 @@ func (t *task) Delete(ctx context.Context, opts ...ProcessDeleteOpts) (*ExitStat
 	switch status.Status {
 	case Stopped, Unknown, "":
 	case Created:
-		if t.client.runtime == fmt.Sprintf("%s.%s", plugin.RuntimePlugin, "windows") {
+		if t.client.runtime == plugin.RuntimePlugin.String()+".windows" {
 			// On windows Created is akin to Stopped
 			break
 		}
@@ -325,7 +323,16 @@ func (t *task) Delete(ctx context.Context, opts ...ProcessDeleteOpts) (*ExitStat
 		return nil, fmt.Errorf("task must be stopped before deletion: %s: %w", status.Status, errdefs.ErrFailedPrecondition)
 	}
 	if t.io != nil {
-		t.io.Close()
+		// io.Wait locks for restored tasks on Windows unless we call
+		// io.Close first (https://github.com/containerd/containerd/issues/5621)
+		// in other cases, preserve the contract and let IO finish before closing
+		if t.client.runtime == plugin.RuntimePlugin.String()+".windows" {
+			t.io.Close()
+		}
+		// io.Cancel is used to cancel the io goroutine while it is in
+		// fifo-opening state. It does not stop the pipes since these
+		// should be closed on the shim's side, otherwise we might lose
+		// data from the container!
 		t.io.Cancel()
 		t.io.Wait()
 	}
@@ -356,7 +363,7 @@ func (t *task) Exec(ctx context.Context, id string, spec *specs.Process, ioCreat
 			i.Close()
 		}
 	}()
-	any, err := protobuf.MarshalAnyToProto(spec)
+	pSpec, err := protobuf.MarshalAnyToProto(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +375,7 @@ func (t *task) Exec(ctx context.Context, id string, spec *specs.Process, ioCreat
 		Stdin:       cfg.Stdin,
 		Stdout:      cfg.Stdout,
 		Stderr:      cfg.Stderr,
-		Spec:        any,
+		Spec:        pSpec,
 	}
 	if _, err := t.client.TaskService().Exec(ctx, request); err != nil {
 		i.Cancel()
@@ -456,11 +463,11 @@ func (t *task) Checkpoint(ctx context.Context, opts ...CheckpointTaskOpts) (Imag
 	}
 	request.ParentCheckpoint = i.ParentCheckpoint.String()
 	if i.Options != nil {
-		any, err := protobuf.MarshalAnyToProto(i.Options)
+		o, err := protobuf.MarshalAnyToProto(i.Options)
 		if err != nil {
 			return nil, err
 		}
-		request.Options = any
+		request.Options = o
 	}
 
 	status, err := t.Status(ctx)
@@ -502,7 +509,7 @@ func (t *task) Checkpoint(ctx context.Context, opts ...CheckpointTaskOpts) (Imag
 			return nil, err
 		}
 	}
-	desc, err := t.writeIndex(ctx, &index)
+	desc, err := writeIndex(ctx, &index, t.client, t.id)
 	if err != nil {
 		return nil, err
 	}
@@ -541,11 +548,11 @@ func (t *task) Update(ctx context.Context, opts ...UpdateTaskOpts) error {
 		}
 	}
 	if i.Resources != nil {
-		any, err := typeurl.MarshalAny(i.Resources)
+		r, err := typeurl.MarshalAny(i.Resources)
 		if err != nil {
 			return err
 		}
-		request.Resources = protobuf.FromAny(any)
+		request.Resources = protobuf.FromAny(r)
 	}
 	if i.Annotations != nil {
 		request.Annotations = i.Annotations
@@ -651,18 +658,6 @@ func (t *task) checkpointImage(ctx context.Context, index *v1.Index, image strin
 	}
 	index.Manifests = append(index.Manifests, ir.Target)
 	return nil
-}
-
-func (t *task) writeIndex(ctx context.Context, index *v1.Index) (d v1.Descriptor, err error) {
-	labels := map[string]string{}
-	for i, m := range index.Manifests {
-		labels[fmt.Sprintf("containerd.io/gc.ref.content.%d", i)] = m.Digest.String()
-	}
-	buf := bytes.NewBuffer(nil)
-	if err := json.NewEncoder(buf).Encode(index); err != nil {
-		return v1.Descriptor{}, err
-	}
-	return writeContent(ctx, t.client.ContentStore(), v1.MediaTypeImageIndex, t.id, buf, content.WithLabels(labels))
 }
 
 func writeContent(ctx context.Context, store content.Ingester, mediaType, ref string, r io.Reader, opts ...content.Opt) (d v1.Descriptor, err error) {

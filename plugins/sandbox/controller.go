@@ -22,10 +22,12 @@ import (
 	"time"
 
 	runtimeAPI "github.com/containerd/containerd/api/runtime/sandbox/v1"
+	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/events"
 	"github.com/containerd/containerd/events/exchange"
 	"github.com/containerd/containerd/log"
+	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/runtime"
@@ -143,7 +145,7 @@ func (c *controllerLocal) Create(ctx context.Context, sandboxID string, opts ...
 	if _, err := svc.CreateSandbox(ctx, &runtimeAPI.CreateSandboxRequest{
 		SandboxID:  sandboxID,
 		BundlePath: shim.Bundle(),
-		Rootfs:     coptions.Rootfs,
+		Rootfs:     mount.ToProto(coptions.Rootfs),
 		Options:    options,
 		NetnsPath:  coptions.NetNSPath,
 	}); err != nil {
@@ -281,6 +283,19 @@ func (c *controllerLocal) Status(ctx context.Context, sandboxID string, verbose 
 		ExitedAt:  resp.GetExitedAt().AsTime(),
 		Extra:     resp.GetExtra(),
 	}, nil
+}
+
+func (c *controllerLocal) Metrics(ctx context.Context, sandboxID string) (*types.Metric, error) {
+	sb, err := c.getSandbox(ctx, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req := &runtimeAPI.SandboxMetricsRequest{SandboxID: sandboxID}
+	resp, err := sb.SandboxMetrics(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Metrics, nil
 }
 
 func (c *controllerLocal) getSandbox(ctx context.Context, id string) (runtimeAPI.TTRPCSandboxService, error) {

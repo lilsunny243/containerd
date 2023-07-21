@@ -897,8 +897,7 @@ func TestContainerKillAll(t *testing.T) {
 	}
 	defer container.Delete(ctx, WithSnapshotCleanup)
 
-	stdout := bytes.NewBuffer(nil)
-	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(stdout)))
+	task, err := container.NewTask(ctx, cio.NullIO)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1412,5 +1411,9 @@ func TestShimOOMScore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	<-statusC
+	select {
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for task exit event")
+	case <-statusC:
+	}
 }

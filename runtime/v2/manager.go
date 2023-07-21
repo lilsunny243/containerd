@@ -39,7 +39,6 @@ import (
 	"github.com/containerd/containerd/runtime"
 	shimbinary "github.com/containerd/containerd/runtime/v2/shim"
 	"github.com/containerd/containerd/sandbox"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Config for the v2 runtime
@@ -63,7 +62,7 @@ func init() {
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			config := ic.Config.(*Config)
-			supportedPlatforms, err := parsePlatforms(config.Platforms)
+			supportedPlatforms, err := platforms.ParseAll(config.Platforms)
 			if err != nil {
 				return nil, err
 			}
@@ -177,7 +176,7 @@ type ShimManager struct {
 
 // ID of the shim manager
 func (m *ShimManager) ID() string {
-	return fmt.Sprintf("%s.%s", plugin.RuntimePluginV2, "shim")
+	return plugin.RuntimePluginV2.String() + ".shim"
 }
 
 // Start launches a new shim instance
@@ -387,18 +386,6 @@ func (m *ShimManager) Delete(ctx context.Context, id string) error {
 	return err
 }
 
-func parsePlatforms(platformStr []string) ([]ocispec.Platform, error) {
-	p := make([]ocispec.Platform, len(platformStr))
-	for i, v := range platformStr {
-		parsed, err := platforms.Parse(v)
-		if err != nil {
-			return nil, err
-		}
-		p[i] = parsed
-	}
-	return p, nil
-}
-
 // TaskManager wraps task service client on top of shim manager.
 type TaskManager struct {
 	manager *ShimManager
@@ -413,7 +400,7 @@ func NewTaskManager(shims *ShimManager) *TaskManager {
 
 // ID of the task manager
 func (m *TaskManager) ID() string {
-	return fmt.Sprintf("%s.%s", plugin.RuntimePluginV2, "task")
+	return plugin.RuntimePluginV2.String() + ".task"
 }
 
 // Create launches new shim instance and creates new task

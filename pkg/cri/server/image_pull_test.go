@@ -22,11 +22,12 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
-
 	"github.com/containerd/containerd/pkg/cri/annotations"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
+	"github.com/containerd/containerd/pkg/cri/labels"
+
+	"github.com/stretchr/testify/assert"
+	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 func TestParseAuth(t *testing.T) {
@@ -431,6 +432,54 @@ func TestSnapshotterFromPodSandboxConfig(t *testing.T) {
 			snapshotter, err := cri.snapshotterFromPodSandboxConfig(context.Background(), "test-image", tt.podSandboxConfig)
 			assert.Equal(t, tt.expectSnapshotter, snapshotter)
 			assert.Equal(t, tt.expectErr, err)
+		})
+	}
+}
+func TestImageGetLabels(t *testing.T) {
+	tests := []struct {
+		name               string
+		expectedLabel      map[string]string
+		configSandboxImage string
+		pullImageName      string
+	}{
+		{
+			name:               "pinned image labels should get added on sandbox image",
+			expectedLabel:      map[string]string{labels.ImageLabelKey: labels.ImageLabelValue, labels.PinnedImageLabelKey: labels.PinnedImageLabelValue},
+			configSandboxImage: "registry.k8s.io/pause:3.9",
+			pullImageName:      "registry.k8s.io/pause:3.9",
+		},
+		{
+			name:               "pinned image labels should get added on sandbox image without tag",
+			expectedLabel:      map[string]string{labels.ImageLabelKey: labels.ImageLabelValue, labels.PinnedImageLabelKey: labels.PinnedImageLabelValue},
+			configSandboxImage: "registry.k8s.io/pause",
+			pullImageName:      "registry.k8s.io/pause:latest",
+		},
+		{
+			name:               "pinned image labels should get added on sandbox image specified with tag and digest both",
+			expectedLabel:      map[string]string{labels.ImageLabelKey: labels.ImageLabelValue, labels.PinnedImageLabelKey: labels.PinnedImageLabelValue},
+			configSandboxImage: "registry.k8s.io/pause:3.9@sha256:7031c1b283388d2c2e09b57badb803c05ebed362dc88d84b480cc47f72a21097",
+			pullImageName:      "registry.k8s.io/pause@sha256:7031c1b283388d2c2e09b57badb803c05ebed362dc88d84b480cc47f72a21097",
+		},
+		{
+			name:               "pinned image labels should get added on sandbox image specified with digest",
+			expectedLabel:      map[string]string{labels.ImageLabelKey: labels.ImageLabelValue, labels.PinnedImageLabelKey: labels.PinnedImageLabelValue},
+			configSandboxImage: "registry.k8s.io/pause@sha256:7031c1b283388d2c2e09b57badb803c05ebed362dc88d84b480cc47f72a21097",
+			pullImageName:      "registry.k8s.io/pause@sha256:7031c1b283388d2c2e09b57badb803c05ebed362dc88d84b480cc47f72a21097",
+		},
+		{
+			name:               "pinned image labels should not get added on other image",
+			expectedLabel:      map[string]string{labels.ImageLabelKey: labels.ImageLabelValue},
+			configSandboxImage: "registry.k8s.io/pause:3.9",
+			pullImageName:      "registry.k8s.io/random:latest",
+		},
+	}
+
+	svc := newTestCRIService()
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			svc.config.SandboxImage = tc.configSandboxImage
+			assert.Equal(t, tc.expectedLabel, svc.getLabels(context.Background(), tc.pullImageName))
 		})
 	}
 }

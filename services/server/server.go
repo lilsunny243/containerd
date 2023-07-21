@@ -41,7 +41,6 @@ import (
 	"github.com/containerd/containerd/defaults"
 	"github.com/containerd/containerd/diff"
 	diffproxy "github.com/containerd/containerd/diff/proxy"
-	"github.com/containerd/containerd/events/exchange"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/pkg/dialer"
 	"github.com/containerd/containerd/pkg/timeout"
@@ -196,8 +195,6 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			ttrpcServer: ttrpcServer,
 			config:      config,
 		}
-		// TODO: Remove this in 2.0 and let event plugin crease it
-		events      = exchange.NewExchange()
 		initialized = plugin.NewPluginSet()
 		required    = make(map[string]struct{})
 	)
@@ -215,9 +212,9 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			config.Root,
 			config.State,
 		)
-		initContext.Events = events
 		initContext.Address = config.GRPC.Address
 		initContext.TTRPCAddress = config.TTRPC.Address
+		initContext.RegisterReadiness = s.RegisterReadiness
 
 		// load the plugin specific configuration if it is provided
 		if p.Config != nil {
@@ -293,6 +290,7 @@ type Server struct {
 	tcpServer   *grpc.Server
 	config      *srvconfig.Config
 	plugins     []*plugin.Plugin
+	ready       sync.WaitGroup
 }
 
 // ServeGRPC provides the containerd grpc APIs on the provided listener
@@ -368,6 +366,17 @@ func (s *Server) Stop() {
 				Error("failed to close plugin")
 		}
 	}
+}
+
+func (s *Server) RegisterReadiness() func() {
+	s.ready.Add(1)
+	return func() {
+		s.ready.Done()
+	}
+}
+
+func (s *Server) Wait() {
+	s.ready.Wait()
 }
 
 // LoadPlugins loads all plugins into containerd and generates an ordered graph

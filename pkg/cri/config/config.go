@@ -135,17 +135,17 @@ type CniConfig struct {
 	// device is created as the net namespace is created, it's safe to run
 	// in parallel mode as the default setting.
 	NetworkPluginSetupSerially bool `toml:"setup_serially" json:"setupSerially"`
-	// NetworkPluginConfTemplate is the file path of golang template used to generate
-	// cni config.
+	// NetworkPluginConfTemplate is the file path of golang template used to generate cni config.
 	// When it is set, containerd will get cidr(s) from kubelet to replace {{.PodCIDR}},
 	// {{.PodCIDRRanges}} or {{.Routes}} in the template, and write the config into
 	// NetworkPluginConfDir.
 	// Ideally the cni config should be placed by system admin or cni daemon like calico,
-	// weaveworks etc. However, there are still users using kubenet
-	// (https://kubernetes.io/docs/concepts/cluster-administration/network-plugins/#kubenet)
-	// today, who don't have a cni daemonset in production. NetworkPluginConfTemplate is
-	// a temporary backward-compatible solution for them.
-	// DEPRECATED: use CNI configs
+	// weaveworks etc. However, this is useful for the cases when there is no cni daemonset to place cni config.
+	// This allowed for very simple generic networking using the Kubernetes built in node pod CIDR IPAM, avoiding the
+	// need to fetch the node object through some external process (which has scalability, auth, complexity issues).
+	// It is currently heavily used in kubernetes-containerd CI testing
+	// NetworkPluginConfTemplate was once deprecated in containerd v1.7.0,
+	// but its deprecation was cancelled in v1.7.3.
 	NetworkPluginConfTemplate string `toml:"conf_template" json:"confTemplate"`
 	// IPPreference specifies the strategy to use when selecting the main IP address for a pod.
 	//
@@ -179,14 +179,6 @@ type AuthConfig struct {
 	IdentityToken string `toml:"identitytoken" json:"identitytoken"`
 }
 
-// TLSConfig contains the CA/Cert/Key used for a registry
-type TLSConfig struct {
-	InsecureSkipVerify bool   `toml:"insecure_skip_verify" json:"insecure_skip_verify"`
-	CAFile             string `toml:"ca_file" json:"caFile"`
-	CertFile           string `toml:"cert_file" json:"certFile"`
-	KeyFile            string `toml:"key_file" json:"keyFile"`
-}
-
 // Registry is registry settings configured
 type Registry struct {
 	// ConfigPath is a path to the root directory containing registry-specific
@@ -203,7 +195,7 @@ type Registry struct {
 	Configs map[string]RegistryConfig `toml:"configs" json:"configs"`
 	// Auths are registry endpoint to auth config mapping. The registry endpoint must
 	// be a valid url with host specified.
-	// DEPRECATED: Use ConfigPath instead. Remove in containerd 1.6.
+	// DEPRECATED: Use ConfigPath instead. Remove in containerd 2.0, supported in 1.x releases.
 	Auths map[string]AuthConfig `toml:"auths" json:"auths"`
 	// Headers adds additional HTTP headers that get sent to all registries
 	Headers map[string][]string `toml:"headers" json:"headers"`
@@ -213,11 +205,6 @@ type Registry struct {
 type RegistryConfig struct {
 	// Auth contains information to authenticate to the registry.
 	Auth *AuthConfig `toml:"auth" json:"auth"`
-	// TLS is a pair of CA/Cert/Key which then are used when creating the transport
-	// that communicates with the registry.
-	// This field will not be used when ConfigPath is provided.
-	// DEPRECATED: Use ConfigPath instead. Remove in containerd 1.7.
-	TLS *TLSConfig `toml:"tls" json:"tls"`
 }
 
 // ImageDecryption contains configuration to handling decryption of encrypted container images.
@@ -411,19 +398,6 @@ func ValidatePluginConfig(ctx context.Context, c *PluginConfig) error {
 			return errors.New("`mirrors` cannot be set when `config_path` is provided")
 		}
 		log.G(ctx).Warning("`mirrors` is deprecated, please use `config_path` instead")
-	}
-	var hasDeprecatedTLS bool
-	for _, r := range c.Registry.Configs {
-		if r.TLS != nil {
-			hasDeprecatedTLS = true
-			break
-		}
-	}
-	if hasDeprecatedTLS {
-		if useConfigPath {
-			return errors.New("`configs.tls` cannot be set when `config_path` is provided")
-		}
-		log.G(ctx).Warning("`configs.tls` is deprecated, please use `config_path` instead")
 	}
 
 	// Validation for deprecated auths options and mapping it to configs.

@@ -22,23 +22,21 @@ import (
 	"path/filepath"
 
 	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/events/exchange"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // InitContext is used for plugin initialization
 type InitContext struct {
-	Context      context.Context
-	Root         string
-	State        string
-	Config       interface{}
-	Address      string
-	TTRPCAddress string
+	Context           context.Context
+	Root              string
+	State             string
+	Config            interface{}
+	Address           string
+	TTRPCAddress      string
+	RegisterReadiness func() func()
 
-	// deprecated: will be removed in 2.0, use plugin.EventType
-	Events *exchange.Exchange
-
-	Meta *Meta // plugins can fill in metadata at init.
+	// Meta is metadata plugins can fill in at init
+	Meta *Meta
 
 	plugins *Set
 }

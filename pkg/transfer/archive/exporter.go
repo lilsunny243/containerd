@@ -144,9 +144,9 @@ func (iis *ImageExportStream) MarshalAny(ctx context.Context, sm streaming.Strea
 	return typeurl.MarshalAny(s)
 }
 
-func (iis *ImageExportStream) UnmarshalAny(ctx context.Context, sm streaming.StreamGetter, any typeurl.Any) error {
+func (iis *ImageExportStream) UnmarshalAny(ctx context.Context, sm streaming.StreamGetter, anyType typeurl.Any) error {
 	var s transfertypes.ImageExportStream
-	if err := typeurl.UnmarshalTo(any, &s); err != nil {
+	if err := typeurl.UnmarshalTo(anyType, &s); err != nil {
 		return err
 	}
 
@@ -156,15 +156,7 @@ func (iis *ImageExportStream) UnmarshalAny(ctx context.Context, sm streaming.Str
 		return err
 	}
 
-	var specified []v1.Platform
-	for _, p := range s.Platforms {
-		specified = append(specified, v1.Platform{
-			OS:           p.OS,
-			Architecture: p.Architecture,
-			Variant:      p.Variant,
-		})
-	}
-
+	specified := platforms.FromProto(s.Platforms)
 	iis.stream = tstreaming.WriteByteStream(ctx, stream)
 	iis.mediaType = s.MediaType
 	iis.platforms = specified

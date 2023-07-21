@@ -137,7 +137,7 @@ version = 2
   selinux_category_range = 1024
 
   # sandbox_image is the image used by sandbox container.
-  sandbox_image = "registry.k8s.io/pause:3.7"
+  sandbox_image = "registry.k8s.io/pause:3.9"
 
   # stats_collect_period is the period (in seconds) of snapshots stats collection.
   stats_collect_period = 10
@@ -402,9 +402,6 @@ version = 2
     # If this is set, containerd will generate a cni config file from the
     # template. Otherwise, containerd will wait for the system admin or cni
     # daemon to drop the config file into the conf_dir.
-    # This is a temporary backward-compatible solution for kubenet users
-    # who don't have a cni daemonset in production yet.
-    # This will be deprecated when kubenet is deprecated.
     # See the "CNI Config Template" section for more details.
     conf_template = ""
     # ip_pref specifies the strategy to use when selecting the main IP address for a pod.
@@ -503,11 +500,8 @@ runtime will be used. For example, see
 
 ## CNI Config Template
 
-Ideally the cni config should be placed by system admin or cni daemon like calico,
-weaveworks etc. However, there are still users using [kubenet](https://kubernetes.io/docs/concepts/cluster-administration/network-plugins/#kubenet)
-today, who don't have a cni daemonset in production. The cni config template is
-a temporary backward-compatible solution for them. This is expected to be
-deprecated when kubenet is deprecated.
+Ideally the cni config should be placed by system admin or cni daemon like calico, weaveworks etc.
+However, this is useful for the cases when there is no cni daemonset to place cni config.
 
 The cni config template uses the [golang
 template](https://golang.org/pkg/text/template/) format. Currently supported

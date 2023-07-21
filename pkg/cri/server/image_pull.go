@@ -19,14 +19,12 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -45,6 +43,7 @@ import (
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/pkg/cri/annotations"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
+	crilabels "github.com/containerd/containerd/pkg/cri/labels"
 	snpkg "github.com/containerd/containerd/pkg/snapshotters"
 	distribution "github.com/containerd/containerd/reference/docker"
 	"github.com/containerd/containerd/remotes/docker"
@@ -154,12 +153,15 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		tracing.Attribute("image.ref", ref),
 		tracing.Attribute("snapshotter.name", snapshotter),
 	)
+
+	labels := c.getLabels(ctx, ref)
+
 	pullOpts := []containerd.RemoteOpt{
 		containerd.WithSchema1Conversion, //nolint:staticcheck // Ignore SA1019. Need to keep deprecated package for compatibility.
 		containerd.WithResolver(resolver),
 		containerd.WithPullSnapshotter(snapshotter),
 		containerd.WithPullUnpack,
-		containerd.WithPullLabel(imageLabelKey, imageLabelValue),
+		containerd.WithPullLabels(labels),
 		containerd.WithMaxConcurrentDownloads(c.config.MaxConcurrentDownloads),
 		containerd.WithImageHandler(imageHandler),
 		containerd.WithUnpackOpts([]containerd.UnpackOpt{
@@ -198,7 +200,7 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		if r == "" {
 			continue
 		}
-		if err := c.createImageReference(ctx, r, image.Target()); err != nil {
+		if err := c.createImageReference(ctx, r, image.Target(), labels); err != nil {
 			return nil, fmt.Errorf("failed to create image reference %q: %w", r, err)
 		}
 		// Update image store to reflect the newest state in containerd.
@@ -267,12 +269,12 @@ func ParseAuth(auth *runtime.AuthConfig, host string) (string, string, error) {
 // Note that because create and update are not finished in one transaction, there could be race. E.g.
 // the image reference is deleted by someone else after create returns already exists, but before update
 // happens.
-func (c *criService) createImageReference(ctx context.Context, name string, desc imagespec.Descriptor) error {
+func (c *criService) createImageReference(ctx context.Context, name string, desc imagespec.Descriptor, labels map[string]string) error {
 	img := containerdimages.Image{
 		Name:   name,
 		Target: desc,
 		// Add a label to indicate that the image is managed by the cri plugin.
-		Labels: map[string]string{imageLabelKey: imageLabelValue},
+		Labels: labels,
 	}
 	// TODO(random-liu): Figure out which is the more performant sequence create then update or
 	// update then create.
@@ -280,11 +282,29 @@ func (c *criService) createImageReference(ctx context.Context, name string, desc
 	if err == nil || !errdefs.IsAlreadyExists(err) {
 		return err
 	}
-	if oldImg.Target.Digest == img.Target.Digest && oldImg.Labels[imageLabelKey] == imageLabelValue {
+	if oldImg.Target.Digest == img.Target.Digest && oldImg.Labels[crilabels.ImageLabelKey] == labels[crilabels.ImageLabelKey] {
 		return nil
 	}
-	_, err = c.client.ImageService().Update(ctx, img, "target", "labels."+imageLabelKey)
+	_, err = c.client.ImageService().Update(ctx, img, "target", "labels."+crilabels.ImageLabelKey)
 	return err
+}
+
+// getLabels get image labels to be added on CRI image
+func (c *criService) getLabels(ctx context.Context, name string) map[string]string {
+	labels := map[string]string{crilabels.ImageLabelKey: crilabels.ImageLabelValue}
+	configSandboxImage := c.config.SandboxImage
+	// parse sandbox image
+	sandboxNamedRef, err := distribution.ParseDockerRef(configSandboxImage)
+	if err != nil {
+		log.G(ctx).Errorf("failed to parse sandbox image from config %s", sandboxNamedRef)
+		return nil
+	}
+	sandboxRef := sandboxNamedRef.String()
+	// Adding pinned image label to sandbox image
+	if sandboxRef == name {
+		labels[crilabels.PinnedImageLabelKey] = crilabels.PinnedImageLabelValue
+	}
+	return labels
 }
 
 // updateImage updates image store to reflect the newest state of an image reference
@@ -295,7 +315,7 @@ func (c *criService) updateImage(ctx context.Context, r string) error {
 	if err != nil && !errdefs.IsNotFound(err) {
 		return fmt.Errorf("get image by reference: %w", err)
 	}
-	if err == nil && img.Labels()[imageLabelKey] != imageLabelValue {
+	if err == nil && img.Labels()[crilabels.ImageLabelKey] != crilabels.ImageLabelValue {
 		// Make sure the image has the image id as its unique
 		// identifier that references the image in its lifetime.
 		configDesc, err := img.Config(ctx)
@@ -303,14 +323,15 @@ func (c *criService) updateImage(ctx context.Context, r string) error {
 			return fmt.Errorf("get image id: %w", err)
 		}
 		id := configDesc.Digest.String()
-		if err := c.createImageReference(ctx, id, img.Target()); err != nil {
+		labels := c.getLabels(ctx, id)
+		if err := c.createImageReference(ctx, id, img.Target(), labels); err != nil {
 			return fmt.Errorf("create image id reference %q: %w", id, err)
 		}
 		if err := c.imageStore.Update(ctx, id); err != nil {
 			return fmt.Errorf("update image store for %q: %w", id, err)
 		}
 		// The image id is ready, add the label to mark the image as managed.
-		if err := c.createImageReference(ctx, r, img.Target()); err != nil {
+		if err := c.createImageReference(ctx, r, img.Target(), labels); err != nil {
 			return fmt.Errorf("create managed label: %w", err)
 		}
 	}
@@ -320,48 +341,6 @@ func (c *criService) updateImage(ctx context.Context, r string) error {
 		return fmt.Errorf("update image store for %q: %w", r, err)
 	}
 	return nil
-}
-
-// getTLSConfig returns a TLSConfig configured with a CA/Cert/Key specified by registryTLSConfig
-func (c *criService) getTLSConfig(registryTLSConfig criconfig.TLSConfig) (*tls.Config, error) {
-	var (
-		tlsConfig = &tls.Config{}
-		cert      tls.Certificate
-		err       error
-	)
-	if registryTLSConfig.CertFile != "" && registryTLSConfig.KeyFile == "" {
-		return nil, fmt.Errorf("cert file %q was specified, but no corresponding key file was specified", registryTLSConfig.CertFile)
-	}
-	if registryTLSConfig.CertFile == "" && registryTLSConfig.KeyFile != "" {
-		return nil, fmt.Errorf("key file %q was specified, but no corresponding cert file was specified", registryTLSConfig.KeyFile)
-	}
-	if registryTLSConfig.CertFile != "" && registryTLSConfig.KeyFile != "" {
-		cert, err = tls.LoadX509KeyPair(registryTLSConfig.CertFile, registryTLSConfig.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load cert file: %w", err)
-		}
-		if len(cert.Certificate) != 0 {
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
-		// TODO(thaJeztah): verify if we should ignore the deprecation; see https://github.com/containerd/containerd/pull/7349/files#r990644833
-		tlsConfig.BuildNameToCertificate() //nolint:staticcheck
-	}
-
-	if registryTLSConfig.CAFile != "" {
-		caCertPool, err := x509.SystemCertPool()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get system cert pool: %w", err)
-		}
-		caCert, err := os.ReadFile(registryTLSConfig.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load CA file: %w", err)
-		}
-		caCertPool.AppendCertsFromPEM(caCert)
-		tlsConfig.RootCAs = caCertPool
-	}
-
-	tlsConfig.InsecureSkipVerify = registryTLSConfig.InsecureSkipVerify
-	return tlsConfig, nil
 }
 
 func hostDirFromRoots(roots []string) func(string) (string, error) {
@@ -421,12 +400,7 @@ func (c *criService) registryHosts(ctx context.Context, auth *runtime.AuthConfig
 				config    = c.config.Registry.Configs[u.Host]
 			)
 
-			if config.TLS != nil {
-				transport.TLSClientConfig, err = c.getTLSConfig(*config.TLS)
-				if err != nil {
-					return nil, fmt.Errorf("get TLSConfig for registry %q: %w", e, err)
-				}
-			} else if docker.IsLocalhost(host) && u.Scheme == "http" {
+			if docker.IsLocalhost(host) && u.Scheme == "http" {
 				// Skipping TLS verification for localhost
 				transport.TLSClientConfig = &tls.Config{
 					InsecureSkipVerify: true,
